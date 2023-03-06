@@ -621,7 +621,7 @@ def GalacticNoiseSpectrum(StNr,ChNr,Run,EvtNr,Plot=False):
     GNStation.add_channel(GNChannel) 
     
     
-    channelGalacticNoiseAdder = NuRadioReco.modules.channelGalacticNoiseSpectrum.channelGalacticNoiseAdder()
+    channelGalacticNoiseAdder = channelGalacticNoiseSpectrum.channelGalacticNoiseAdder()
     channelGalacticNoiseAdder.begin(debug=False,n_side=4,interpolation_frequencies=np.arange(10 * units.MHz, 1100 * units.MHz,100*units.MHz))
     GalacticNoiseTrace=channelGalacticNoiseAdder.run(GNEvent,GNStation,GNDetector,passband=[10 * units.MHz, 1000 * units.MHz])
     
@@ -642,7 +642,7 @@ def GalacticNoiseSpectrum(StNr,ChNr,Run,EvtNr,Plot=False):
         plt.show()
     return freq, np.abs(GalacticNoiseSpec)
 
-def GalacticNoiseVRMSCurve(StNr,ChNr,RunsEvts,LowPass=False):
+def GalacticNoiseVRMSCurve(StNr,ChNr,RunEvts,LowPass=False):
     EventRMS=np.array([])
     EventTime=np.array([])
     for (RunNr,EvNr) in RunEvts:
@@ -680,7 +680,7 @@ def GalacticNoiseVRMSCurve(StNr,ChNr,RunsEvts,LowPass=False):
     #plt.plot(MidBins,1000*VRMSAvg,'r.')
     plt.plot(EventTime,EventRMS,'.', markersize=20)
     plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-    plt.title("Galactic noise V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(len(RunsEvts)) + " events")
+    plt.title("Galactic noise V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(len(RunEvts)) + " events")
     #plt.ylim(-50,50)
     #plt.xlim(0,np.max(SamplingTimes*(10**9)))
     plt.xlabel("LST Time (hrs)",fontsize=20)#20)

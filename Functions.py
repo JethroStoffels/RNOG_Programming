@@ -124,7 +124,7 @@ def TimeTraceFFT(StNr,ChNr,Run,EvNr,Amplitude="V",LogScale=False):
     plt.xlim(0,np.max(freq*(10**-6)))
     if LogScale:
         plt.yscale("log")
-    #plt.xlim(0,200)
+    #plt.xlim(400,450)
     plt.xlabel("Frequency (MHz)",fontsize=40)#20)
 
     plt.xticks(fontsize=30)#15)
