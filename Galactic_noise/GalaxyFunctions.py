@@ -36,7 +36,7 @@ def UTC(TriggerTimes,EvIdx):
 def LT(TriggerTimes,EvIdx):
     return (UTC(TriggerTimes,EvIdx)-2)%24
 
-def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=(5,5,5,5),StdCut=-1,FFTFilter=True,Lowpass=False):
+def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=(5,5,5,5),StdCut=(-1,-1),FFTFilter=True,Lowpass=False,Plot=True):
     """
     Plots the Average V_RMS as a function of time of the day.
     Parameters:
@@ -47,14 +47,14 @@ def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=
     FFTFilter=Boolean: if true, applies a Notch filter to all frequency spectra to cut out frequencies which have shown to be potentially problematic
     TimeFormat= String: Dictates what timeformat the x-axis will be in. Options: "LST": local sidereal time, "LT": Local time & "UTC": UTC time
     Triggers=tupel of flags to dictate which triggers are allowed in the analysis. Events with different triggers are not used (0=has to be absent, 1=has to be present, anything else=both 0 and 1 can be used for analysis)
-    StdCut=if larger than zero, all VRMS outliers above StdCut standard variations will be cut out of the analysis
+    StdCut=(AmtStd,StdCut) if larger than zero, all VRMS outliers above StdCut standard variations will be cut out of the analysis. This procedure is repeated AmtStd times.
     """
     (has_rf,has_ext,has_pps,has_soft)=Triggers
     NEvs=0
     EventRMS=np.array([]) #Array to store V_RMS value of each event
     EventTime=np.array([])#Array to store timestamp of each event
     #for (Run, EvNr) in TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
-    FilteredRuns,FilteredEvIdxs=TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft)
+    FilteredRuns,FilteredEvNrs=TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft)
     for Run in FilteredRuns:
         path=Path(StNr,Run)
         #if os.path.isdir(path+"/combined.root"):
@@ -65,10 +65,18 @@ def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=
             RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
             EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
             TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')        
+            
+            RunIdx=np.where(FilteredRuns==Run)[0][0]
 
-
-            for EvNr in FilteredEvIdxs[np.where(FilteredRuns==Run)[0][0]]:
+            for EvNr in FilteredEvNrs[RunIdx]:
                 EvIdx=np.where(EventNrs==EvNr)[0][0]
+                if np.isinf(TriggerTimes[EvIdx]):
+                    print("Inf timestamp at: Run" + str(Run) + ", EvNr" + str(EvNr))
+                    FilteredEvNrs[RunIdx]=np.delete(FilteredEvNrs[RunIdx],np.where(FilteredEvNrs[RunIdx]==EvNr)[0][0])
+                    if len(FilteredEvNrs[RunIdx])==0:
+                        FilteredRuns=np.delete(FilteredRuns, RunIdx)
+                        FilteredEvNrs=np.delete(FilteredEvNrs, RunIdx)
+                    continue
                 VoltageTrace=ADCtoVoltage(RadiantData[EvIdx][ChNr]) #The timetrace data in voltage
                 if ZeroAvg==True:
                     Vmean=np.mean(VoltageTrace)
@@ -103,6 +111,16 @@ def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=
                     return
 
 
+    if np.all(np.array(StdCut)>=0):
+        for StdAmt in range(StdCut[0]):
+            EventRMSStd=np.std(EventRMS)
+            EventRMSMedian=np.median(EventRMS)
+            for VRMS in EventRMS:
+                if not EventRMSMedian - StdCut[1]*EventRMSStd<VRMS<EventRMSMedian + StdCut[1]*EventRMSStd:
+                    #GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
+                    FilteredRuns,FilteredEvNrs=StdCutRunEvtsFilter(np.where(EventRMS==VRMS)[0][0],FilteredRuns,FilteredEvNrs)
+                    EventTime=np.delete(EventTime, np.where(EventRMS==VRMS)[0][0])
+                    EventRMS=np.delete(EventRMS, np.where(EventRMS==VRMS)[0][0])
     #print(np.sum([EventRMS[i] for i in np.arange(len(EventTime)) if EventTime[i]<=.25 ]))
     
     EventTimeCounts, EventTimeBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
@@ -136,32 +154,51 @@ def TransitCurve(StNr,ChNr,Runs,NBins=24,ZeroAvg=True,TimeFormat="LST",Triggers=
     MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)])           
     VRMSAvg=np.array([EventRMSCounts[i]/EventTimeCounts[i]  if EventTimeCounts[i] !=0 else 0 for i in range(len(EventRMSCounts))])
     
-    if StdCut>=0:
-        for i in range(len(GroupedVRMS)):
-            for VRMS in GroupedVRMS[i]:
-                if VRMS>VRMSMedian[i] + StdCut*VRMSStd[i] or VRMS<VRMSMedian[i] - StdCut*VRMSStd[i]:
-                    GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
-        VRMSAvg=np.array([np.mean(GroupedVRMS[i]) for i in range(len(GroupedVRMS))])
-        VRMSStd=np.array([np.std(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
-    
-    plt.figure(figsize=(15,5))
-    plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(EventTimeCounts)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-    #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
-    plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-    #for i in range(len(GroupedVRMS)):
-    #    plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-    
-    #plt.plot(MidBins,1000*VRMSAvg,'r.')
-    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-    plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(NEvs) + " events between run " + str(Runs[0]) + " and run " + str(Runs[-1]) + " throughout the day for " + str(NBins) + " bins")
-    #plt.ylim(-50,50)
-    #plt.xlim(0,np.max(SamplingTimes*(10**9)))
-    plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
-    plt.ylabel("V_RMS (mV)",fontsize=20)#20)
-    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
-    plt.yticks(fontsize=25)#15)
-    #plt.legend()
-    plt.show()
+    #if StdCut>=0:
+    #    for i in range(len(GroupedVRMS)):
+    #        for VRMS in GroupedVRMS[i]:
+    #            if VRMS>VRMSMedian[i] + StdCut*VRMSStd[i] or VRMS<VRMSMedian[i] - StdCut*VRMSStd[i]:
+    #                GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
+    #    VRMSAvg=np.array([np.mean(GroupedVRMS[i]) for i in range(len(GroupedVRMS))])
+    #    VRMSStd=np.array([np.std(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))]) 
+    if Plot:
+        plt.figure(figsize=(15,5))
+        plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(EventTimeCounts)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+        #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
+        plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
+        #for i in range(len(GroupedVRMS)):
+        #    plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
+
+        #plt.plot(MidBins,1000*VRMSAvg,'r.')
+        plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(NEvs) + " events between run " + str(Runs[0]) + " and run " + str(Runs[-1]) + " throughout the day for " + str(NBins) + " bins")
+        #plt.ylim(-50,50)
+        #plt.xlim(0,np.max(SamplingTimes*(10**9)))
+        plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
+        plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+        plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+        plt.yticks(fontsize=25)#15)
+        #plt.legend()
+        plt.show()
+    return MidBins, GroupedVRMS, FilteredRuns,FilteredEvNrs
+
+def StdCutRunEvtsFilter(EvRMSIdx,Runs,EvIdxs):
+    PastElements=0
+    for RunIdx in range(len(Runs)):
+        if PastElements + len(EvIdxs[RunIdx])>EvRMSIdx:
+            SubEvIdx=EvRMSIdx-PastElements-1
+            EvIdxs[RunIdx]=np.delete(EvIdxs[RunIdx],SubEvIdx)
+            if len(EvIdxs[RunIdx])==0:
+                Runs=np.delete(Runs, RunIdx)
+                EvIdxs=np.delete(EvIdxs, RunIdx)
+            return Runs, EvIdxs
+        else:
+            PastElements+=len(EvIdxs[RunIdx])
+            continue
+    return
+
+def InfTimestampFilter(Runs,EventNrs):
+    return
 
 def VRMSTimeOfDay(StNr,ChNr,Runs,t0,t1,TimeFormat="LST"):
     """Plots the VRMS of each event of station StNr, channel ChNr during runs Runs which occur during times of the day t0 and t1 (t0<t1 & t0,t1 in [0,24]), given in timeformat TimeFormat (can be local sidereal time LST or local time LT)."""
@@ -530,10 +567,10 @@ def TriggerFilter(StNr, ChNr, Runs,has_rf0,has_rf1,has_ext,has_pps,has_soft):
     return RunsEvts[1:]
 
 def TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
-    """Returns the runs following the trigger demands"""
+    """Returns the runs and events following the trigger demands"""
     #RunsEvts=np.empty((1,2),dtype=int)
     FilteredRuns=np.array([],dtype=int)
-    FilteredEvts=[]
+    FilteredEvNrs=[]
     Requirements=[has_rf,has_ext,has_pps,has_soft]
            
     for Run in Runs:
@@ -552,12 +589,12 @@ def TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
                     #RunsEvts=np.append(RunsEvts,[Run,EvIdx])
                     if not Run in FilteredRuns:
                         FilteredRuns=np.append(FilteredRuns,int(Run))
-                        FilteredEvts.append(np.array([],dtype=int))
-                    FilteredEvts[-1]=np.append(FilteredEvts[-1],int(EventNrs[EvIdx]))
+                        FilteredEvNrs.append(np.array([],dtype=int))
+                    FilteredEvNrs[-1]=np.append(FilteredEvNrs[-1],int(EventNrs[EvIdx]))
                     #RunsEvts=np.concatenate((RunsEvts,np.array([[Run,EventNrs[EvIdx]]])),axis=0)
 
     #return RunsEvts[1:]
-    return FilteredRuns,FilteredEvts
+    return FilteredRuns,FilteredEvNrs
 
 
 # # Frequency windows:
