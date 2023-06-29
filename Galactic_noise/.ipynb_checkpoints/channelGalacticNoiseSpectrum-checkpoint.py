@@ -220,4 +220,5 @@ class channelGalacticNoiseAdder:
                 ax2.legend()
                 plt.show()
         #return channel_noise_spectrum
+        
         return fft.freq2time(noise_spec_sum, channel.get_sampling_rate())

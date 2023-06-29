@@ -15,8 +15,8 @@ import os
 
 # # Define Constants:
 
-DataPath="/pnfs/iihe/rno-g/data"
-
+# DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
+DataPath="/pnfs/iihe/rno-g/data/handcarry22" #For the handcarry data
 
 # ## Firmware changes run number
 
@@ -143,19 +143,21 @@ def Path(StNr,RunNr,System="U"):
         return DataPath + r"\station{}\run{}".format(StNr, RunNr)
 
 def FilesStRun(StNr,RunNr):
-    """Returns the combined -, daqstatus -, headers - & pedestal datafiles for run RunNR of station StNr"""
+    """Returns the daqstatus -, headers - & pedestal datafiles for run RunNR of station StNr"""
     import uproot
     path=Path(StNr,RunNr)
-    CombinedFile=uproot.open(path+"/combined.root")
     DAQStatFile=uproot.open(path+"/daqstatus.root")
     HeadersFile=uproot.open(path+"/headers.root")
     PedestalFile=uproot.open(path+"/pedestal.root")
-    return CombinedFile, DAQStatFile, HeadersFile, PedestalFile
+    WaveformsFile=uproot.open(path+"/waveforms.root")
+    RunInfo=uproot.open(path+"/runinfo.root")
+    return WaveformsFile, DAQStatFile, HeadersFile, PedestalFile
 
 def GetCombinedFile(StNr,RunNr):
     """Returns the combined datafile for run RunNR of station StNr"""
     import uproot
     path=Path(StNr,RunNr)
+    #print(path+"/combined.root")
     return uproot.open(path+"/combined.root")
 
 def GetPedestalFile(StNr,RunNr):
@@ -163,6 +165,18 @@ def GetPedestalFile(StNr,RunNr):
     import uproot
     path=Path(StNr,RunNr)
     return uproot.open(path+"/pedestal.root")
+
+def GetWaveformsFile(StNr,RunNr):
+    """Returns the waveforms datafile for run RunNR of station StNr"""
+    import uproot
+    path=Path(StNr,RunNr)
+    return uproot.open(path+"/waveforms.root")
+
+def GetHeaderFile(StNr,RunNr):
+    """Returns the header datafile for run RunNR of station StNr"""
+    import uproot
+    path=Path(StNr,RunNr)
+    return uproot.open(path+"/headers.root")
 
 def ADCtoVoltage(ADCCounts):
     """Converts the ADC counts ADCCounts to Volt."""
