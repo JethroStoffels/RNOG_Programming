@@ -15,8 +15,8 @@ import os
 
 # # Define Constants:
 
-# DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
-DataPath="/pnfs/iihe/rno-g/data/handcarry22" #For the handcarry data
+DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
+#DataPath="/pnfs/iihe/rno-g/data/handcarry22" #For the handcarry data
 
 # ## Firmware changes run number
 
