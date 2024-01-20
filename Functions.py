@@ -15,7 +15,7 @@ import os
 
 # # Define Constants:
 
-# DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
+#DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
 DataPath="/pnfs/iihe/rno-g/data/handcarry22" #For the handcarry data
 
 # ## Firmware changes run number
@@ -34,14 +34,21 @@ FirmwareSwitch = { #Runs for each station that start using the new firmware
 def TimeTrace(StNr,ChNr,Run,EvNr,Amplitude="V"):
     """Show the timetrace of Station StNr, channel ChNr for run Run, event EvNr. Units of Ampllitude can be V,mV or ADC"""
     path=Path(StNr,Run)
-    if os.path.isfile(path+"/combined.root") and os.path.isfile(path+"/daqstatus.root"):
-        
+    if os.path.isfile(path+"/combined.root") and os.path.isfile(path+"/daqstatus.root"):   
         CombinedFile=GetCombinedFile(StNr,Run)
         RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
         EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
         #TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')
-    
+        EvIndex=np.where(EventNrs==EvNr)[0][0]
+    elif os.path.isfile(path+"/waveforms.root"):
+        WaveFormFile=GetWaveformsFile(StNr,Run)
+        EventNrs=WaveFormFile['event_number'].array(library="np")
+        EvIdx=np.where(EventNrs==EvNr)[0][0]
+        RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(entry_start=EvIdx, entry_stop=EvIdx+1,library='np')
+        #RadiantData=WaveFormFile['radiant_data[24][2048]'].array(library='np')
+        EvIndex=0
     else:
+        print("Root files not present")
         return
     
     if not EvNr in EventNrs:
@@ -49,7 +56,7 @@ def TimeTrace(StNr,ChNr,Run,EvNr,Amplitude="V"):
         return
         
     
-    EvIndex=np.where(EventNrs==EvNr)[0][0]
+
     sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
     TimeStep=1/sampling_rate #Time between two samples
     SamplingTimes=np.arange(0,len(RadiantData[0][0])*TimeStep,TimeStep)
@@ -75,6 +82,7 @@ def TimeTrace(StNr,ChNr,Run,EvNr,Amplitude="V"):
     plt.yticks(fontsize=30)#15)
     #plt.legend()
     plt.show()
+    return
 
 def TimeTraceFFT(StNr,ChNr,Run,EvNr,Amplitude="V",LogScale=False):
     """Show the FFT of the timetrace of Station StNr, channel ChNr for run Run, event EvNr. Units of Ampllitude can be V,mV or ADC"""
@@ -86,15 +94,22 @@ def TimeTraceFFT(StNr,ChNr,Run,EvNr,Amplitude="V",LogScale=False):
         RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
         EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
         #TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')
-    
+        EvIndex=np.where(EventNrs==EvNr)[0][0]
+    elif os.path.isfile(path+"/waveforms.root"):
+        WaveFormFile=GetWaveformsFile(StNr,Run)
+        EventNrs=WaveFormFile['event_number'].array(library="np")
+        EvIdx=np.where(EventNrs==EvNr)[0][0]
+        RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(entry_start=EvIdx, entry_stop=EvIdx+1,library='np')
+        #RadiantData=WaveFormFile['radiant_data[24][2048]'].array(library='np')
+        EvIndex=0
     else:
+        print("Root files not present")
         return
     
     if not EvNr in EventNrs:
         print("There is no event with this number")
         return
         
-    EvIndex=np.where(EventNrs==EvNr)[0][0]
     sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
     TimeStep=1/sampling_rate #Time between two samples
     SamplingTimes=np.arange(0,len(RadiantData[0][0])*TimeStep,TimeStep)
@@ -170,13 +185,49 @@ def GetWaveformsFile(StNr,RunNr):
     """Returns the waveforms datafile for run RunNR of station StNr"""
     import uproot
     path=Path(StNr,RunNr)
-    return uproot.open(path+"/waveforms.root")
+    WaveFormFile=uproot.open(path+"/waveforms.root")
+    Key=None
+    try:
+        WaveFormFile['waveforms']
+    except:
+        None
+    else:
+        Key='waveforms'
+    try:
+        WaveFormFile['wf']
+    except:
+        None
+    else:
+        Key='wf'
+    if Key==None:
+        print("NonStandard Key in run",RunNr,", options are:")
+        print(WaveFormFile.keys())
+        return
+    return WaveFormFile[Key]
 
 def GetHeaderFile(StNr,RunNr):
     """Returns the header datafile for run RunNR of station StNr"""
     import uproot
     path=Path(StNr,RunNr)
-    return uproot.open(path+"/headers.root")
+    HeaderFile=uproot.open(path+"/headers.root")
+    Key=None
+    try:
+        HeaderFile['header']
+    except:
+        None
+    else:
+        Key='header'
+    try:
+        HeaderFile['hdr']
+    except:
+        None
+    else:
+        Key='hdr'
+    if Key==None:
+        print("NonStandard Key in run",RunNr,", options are:")
+        print(HeaderFile.keys())
+        return
+    return HeaderFile[Key]
 
 def ADCtoVoltage(ADCCounts):
     """Converts the ADC counts ADCCounts to Volt."""

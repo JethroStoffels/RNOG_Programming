@@ -4,20 +4,15 @@
 
 # # Import modules:
 from Functions import *
-#%matplotlib widget
 
 # # Galaxy Stacking:
 
-
-
-def ADCtoVoltageTemp(ADCCounts):
-    """Temporary reimplementation of the ADC to Voltage conversion. Do not use this function!"""
-    ADC_Factor=0.618
-    ADC_Offset=-8.133 
-    return (ADC_Factor*ADCCounts + ADC_Offset)
-
 def LST(TriggerTimes,EvIdx):
-    """Computes the Local Sidereal Time in decimal hours via the astropy module"""
+    """Computes the Local Sidereal Time in decimal hours via the astropy module
+    Parameters:
+    TriggerTimes=The trigger time data of the event in Unix time.  
+    EvIdx=index of the relevant event in the EventNumbers data for this data run
+    """
     from datetime import datetime
     from astropy.coordinates import EarthLocation
     from astropy.time import Time
@@ -28,36 +23,52 @@ def LST(TriggerTimes,EvIdx):
     return T.hour
 
 def UTC(TriggerTimes,EvIdx):
-    """Computes the UTC time in decimal hours"""
+    """Computes the UTC time in decimal hours
+    Parameters:
+    TriggerTimes=The trigger time data of the event in Unix time.  
+    EvIdx=index of the relevant event in the EventNumbers data for this data run
+    """
     from datetime import datetime
     T=datetime.utcfromtimestamp(TriggerTimes[EvIdx])
     return T.hour+T.minute/60 + T.second/3600
 
 def LT(TriggerTimes,EvIdx):
+    """Computes the Local Time at Summit Station for an event
+    Parameters:
+    TriggerTimes=The trigger time data of the event in Unix time.  
+    EvIdx=index of the relevant event in the EventNumbers data for this data run
+    """
     return (UTC(TriggerTimes,EvIdx)-2)%24
 
-def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Triggers=(5,5,5,5),StdCut=(-1,-1),FFTFilter=True,Lowpass=False,Plot=True):
+def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Triggers=(5,5,5,5),StdCut=(-1,-1),FFTFilter=True,Lowpass=False,HardCut=0.0035,EventSkip=1,Plot=True):
     """
     Plots the Average V_RMS as a function of time of the day.
     Parameters:
-    StNr,ChNr,Runs=Station number, channel number, list of runs 
+    StNr,ChNr,Runs=Station number, channel number, list of runs to analyse
     NBins=amount of bins to divide the full day in
     ZeroAvg=Boolean: if true, the timetraces will firs tbe zero averaged
-    Lowpass= Boolean: if true, a butterworth lowpass filter will be applied in order to maintain only galactic noise dominated frequencies
-    FFTFilter=Boolean: if true, applies a Notch filter to all frequency spectra to cut out frequencies which have shown to be potentially problematic
     TimeFormat= String: Dictates what timeformat the x-axis will be in. Options: "LST": local sidereal time, "LT": Local time & "UTC": UTC time
     Triggers=tupel of flags to dictate which triggers are allowed in the analysis. Events with different triggers are not used (0=has to be absent, 1=has to be present, anything else=both 0 and 1 can be used for analysis)
     StdCut=(AmtStd,StdCut) if larger than zero, all VRMS outliers above StdCut standard variations will be cut out of the analysis. This procedure is repeated AmtStd times.
+    FFTFilter=Boolean: if true, applies a Notch filter to all frequency spectra to cut out frequencies which have shown to be potentially problematic
+    Lowpass= Boolean: if true, a butterworth lowpass filter will be applied in order to maintain only galactic noise dominated frequencies
+    HardCut= a hardcut (in Volt) to be performed on all VRMS values. Any event with a VRMS value exceeding this is excluded from the analysis.
+    EventSkip=skips fraction of data to look at. EventSkip=5 => only analyse every 5th event => only analyse 20% of the data.
     """
     (has_rf,has_ext,has_pps,has_soft)=Triggers
     NRuns=0
     EventRMS=np.array([]) #Array to store V_RMS value of each event
     EventTime=np.array([])#Array to store timestamp of each event
-    #for (Run, EvNr) in TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
-    FilteredRuns,FilteredEvNrs=TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft)
+    FilteredRuns,FilteredEvNrs=TriggerFilter(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft)
+    
+    # #Decimate amount of events if EventSkip>1
+    if EventSkip>1:
+        for i in range(len(FilteredEvNrs)):
+            FilteredEvNrs[i]=FilteredEvNrs[i][::EventSkip]
+            
     for Run in FilteredRuns:
         path=Path(StNr,Run)
-        #if os.path.isfile(path+"/combined.root"):   
+        #if os.path.isfile(path+"/combined.root"):
         if os.path.isfile(path+"/waveforms.root") and os.path.isfile(path+"/headers.root"):
             NRuns+=1
             # #If CombinedFile exists:
@@ -66,28 +77,29 @@ def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Trigger
             # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
             # TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')
             
+            #Read in data (RadiantData is read in on a per event basis in order to save memory)
             WaveFormFile=GetWaveformsFile(StNr,Run)
             HeaderFile=GetHeaderFile(StNr,Run)
-            RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
-            EventNrs=WaveFormFile['waveforms']['event_number'].array(library="np")
-            TriggerTimes=HeaderFile['header']["trigger_time"].array(library='np')
-            
+            EventNrs=WaveFormFile['event_number'].array(library="np")
+            TriggerTimes=HeaderFile["trigger_time"].array(library='np')
             RunIdx=np.where(FilteredRuns==Run)[0][0]
 
             for EvNr in FilteredEvNrs[RunIdx]:
                 EvIdx=np.where(EventNrs==EvNr)[0][0]
-                if np.isinf(TriggerTimes[EvIdx]):
-                    print("Inf timestamp at: Run" + str(Run) + ", EvNr" + str(EvNr))
+                RadiantData=WaveFormFile['radiant_data[24][2048]'].array(entry_start=EvIdx, entry_stop=EvIdx+1,library='np')
+                #Check if the relevant timestamp is not inf or nan
+                if np.isinf(TriggerTimes[EvIdx]) or np.isnan(TriggerTimes[EvIdx]):
+                    #print("Inf or nan timestamp at: Run" + str(Run) + ", EvNr" + str(EvNr))
                     FilteredEvNrs[RunIdx]=np.delete(FilteredEvNrs[RunIdx],np.where(FilteredEvNrs[RunIdx]==EvNr)[0][0])
                     if len(FilteredEvNrs[RunIdx])==0:
                         FilteredRuns=np.delete(FilteredRuns, RunIdx)
                         FilteredEvNrs=np.delete(FilteredEvNrs, RunIdx)
                     continue
-                VoltageTrace=ADCtoVoltage(RadiantData[EvIdx][ChNr]) #The timetrace data in voltage
-                if ZeroAvg==True:
+                VoltageTrace=ADCtoVoltage(RadiantData[0][ChNr]) #Convert timetrace data from ADC to voltage
+                if ZeroAvg==True: #Zero average the timetrace 
                     Vmean=np.mean(VoltageTrace)
                     VoltageTrace-=Vmean
-                    #EventRMS=np.append(EventRMS,np.sqrt(np.mean([(V-Vmean)**2 for V in ADCtoVoltage(RadiantData[EvIdx][ChNr])])))
+                #If a filter is required: convert to frequency domain and apply filter
                 if FFTFilter or Lowpass:
                     import scipy.fft as scfft
                     sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
@@ -114,41 +126,13 @@ def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Trigger
                     print("Please enter a valid TimeFormat")
                     return
 
-
-#     if np.all(np.array(StdCut)>=0):
-#         for StdAmt in range(StdCut[0]):
-#             EventRMSStd=np.std(EventRMS)
-#             EventRMSMedian=np.median(EventRMS)
-#             for VRMS in EventRMS:
-#                 if not EventRMSMedian - StdCut[1]*EventRMSStd<VRMS<EventRMSMedian + StdCut[1]*EventRMSStd:
-#                     #GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
-                    
-#                     FilteredRuns,FilteredEvNrs=StdCutRunEvtsFilter(np.where(EventRMS==VRMS)[0][0],FilteredRuns,FilteredEvNrs)
-#                     EventTime=np.delete(EventTime, np.where(EventRMS==VRMS)[0][0])
-#                     EventRMS=np.delete(EventRMS, np.where(EventRMS==VRMS)[0][0])
+            del HeaderFile, RadiantData, EventNrs,TriggerTimes
      
-    
-    #print(np.sum([EventRMS[i] for i in np.arange(len(EventTime)) if EventTime[i]<=.25 ]))
-    EventTimeCounts, EventTimeBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
-    MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)])
-    #Make a histogram of the V_RMS value fully added in its respective bin by adding V_RMS as a weigth to the additions to the histogram
-       
-    EventTimeDig=np.digitize(EventTime,EventTimeBins)
-    VRMSIdx=np.arange(len(EventRMS))
-    GroupedVRMS=np.empty((NBins,),dtype=object)
-    GroupedVRMSIdx=np.empty((NBins,),dtype=object)
-    for i in range(len(EventTimeDig)):
-        GroupedVRMS[EventTimeDig[i]-1]=np.append(GroupedVRMS[EventTimeDig[i]-1],EventRMS[i])
-        GroupedVRMSIdx[EventTimeDig[i]-1]=np.append(GroupedVRMSIdx[EventTimeDig[i]-1],VRMSIdx[i])
-    ##Get rid of "None" entries in beginning of array
-    for i in range(len(GroupedVRMS)):
-        GroupedVRMS[i]=np.delete(GroupedVRMS[i], 0)
-        GroupedVRMSIdx[i]=np.delete(GroupedVRMSIdx[i], 0)
+    MidBins, GroupedVRMS = GroupVRMS(EventRMS,EventTime,NBins)
 
     ####Quality cuts:
     ##Hard cut
-    if True:#np.all(np.array(StdCut)>0):
-        HardCut=0.0035 #Cut of VRMS in Voltage
+    if HardCut>0:
         for i in range(len(GroupedVRMS)):
             for VRMSIdx, VRMS in enumerate(GroupedVRMS[i]):
                 if VRMS>HardCut:
@@ -168,9 +152,6 @@ def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Trigger
             for i in range(len(GroupedVRMS)):
                 for VRMSIdx, VRMS in enumerate(GroupedVRMS[i]):
                     if not VRMSMedian[i] - StdCut[1]*VRMSStd[i]<VRMS<VRMSMedian[i] + StdCut[1]*VRMSStd[i]:
-                        # print("----------------------------------------------------------")
-                        # print(str(VRMSMedian[i] - StdCut[1]*VRMSStd[i]) + "<" + str(VRMS) + "<" + str(VRMSMedian[i] + StdCut[1]*VRMSStd[i]))
-                        # print("VRMS=" + str(VRMS) + ", EventRMSIdx=" + str(np.where(EventRMS==VRMS)[0][0]) + ", EventRMS[Idx]=" + str(EventRMS[np.where(EventRMS==VRMS)[0][0]]) )
                         EventRMSIdx=np.where(EventRMS==VRMS)[0][0]
                         FilteredRuns,FilteredEvNrs=StdCutRunEvtsFilter(EventRMSIdx,FilteredRuns,FilteredEvNrs)
                         EventRMS=np.delete(EventRMS, EventRMSIdx)
@@ -179,99 +160,64 @@ def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Trigger
     
 
     
-    
-#     if np.all(np.array(StdCut)>=0):
-#         for StdAmt in range(StdCut[0]):
-#             EventRMSStd=np.std(EventRMS)
-#             EventRMSMedian=np.median(EventRMS)
-#             for VRMS in EventRMS:
-#                 if not EventRMSMedian - StdCut[1]*EventRMSStd<VRMS<EventRMSMedian + StdCut[1]*EventRMSStd:
-#                     #GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
-                    
-#                     FilteredRuns,FilteredEvNrs=StdCutRunEvtsFilter(np.where(EventRMS==VRMS)[0][0],FilteredRuns,FilteredEvNrs)
-#                     EventTime=np.delete(EventTime, np.where(EventRMS==VRMS)[0][0])
-#                     EventRMS=np.delete(EventRMS, np.where(EventRMS==VRMS)[0][0])
-    
-    
-
     if Plot:
+        NEntries=0
+        for i in range(len(GroupedVRMS)):
+            NEntries+=len(GroupedVRMS[i])
+        
         EventRMSCounts, EventRMSBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False,weights=EventRMS) 
         
-        ##plt.hist(EventTime, bins=NBins,range=(0,24),density=False)
-
-        ##plt.figure()
-        ##plt.hist(EventTime, bins=NBins,range=(0,24),density=False, weights=EventRMS)
-
-        #RMSBins=np.digitize(EventTime,EventTimeBins) #Array of idx of bin in which the timestamp of each event falls
-
-        ##Make a histogram of the V_RMS value fully added in its respective bin by adding V_RMS as a weigth to the additions to the histogram
-        #EventRMSCounts, EventRMSBins=np.histogram(RMSBins, bins=24,range=(0,24),density=False,weights=EventRMS)
-
-
-
-
-
-                   
-        #VRMSAvg=np.array([EventRMSCounts[i]/EventTimeCounts[i]  if EventTimeCounts[i] !=0 else 0 for i in range(len(EventRMSCounts))])
         VRMSAvg=np.array([np.mean(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
         VRMSStd=np.array([np.std(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
 
-        #if StdCut>=0:
-        #    for i in range(len(GroupedVRMS)):
-        #        for VRMS in GroupedVRMS[i]:
-        #            if VRMS>VRMSMedian[i] + StdCut*VRMSStd[i] or VRMS<VRMSMedian[i] - StdCut*VRMSStd[i]:
-        #                GroupedVRMS[i]=np.delete(GroupedVRMS[i], np.where(GroupedVRMS[i]==VRMS)[0][0])
-        #    VRMSAvg=np.array([np.mean(GroupedVRMS[i]) for i in range(len(GroupedVRMS))])
-        #    VRMSStd=np.array([np.std(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))]) 
-        
-        
         plt.figure(figsize=(15,5))
-        plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(EventTimeCounts)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-        #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
+        plt.figtext(0.2, 0.8, "Entries:" + str(NEntries), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
         plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-        for i in range(len(GroupedVRMS)):
-            plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-        #plt.plot(EventTime,1000*EventRMS)
-        #plt.plot(MidBins,1000*VRMSAvg,'r.')
+        # for i in range(len(GroupedVRMS)):
+        #     plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
         plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-        plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(NRuns) + " events between run " + str(Runs[0]) + " and run " + str(Runs[-1]) + " throughout the day for " + str(NBins) + " bins")
-        #plt.ylim(-50,50)
-        #plt.xlim(0,np.max(SamplingTimes*(10**9)))
+        plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(NRuns) + " events between run " + str(np.min(Runs)) + " and run " + str(np.max(Runs)) + " throughout the day for " + str(NBins) + " bins")
         plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
         plt.ylabel("V_RMS (mV)",fontsize=20)#20)
         plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
         plt.yticks(fontsize=25)#15)
-        #plt.legend()
         plt.show()
-    #return EventTime,EventRMS, FilteredRuns,FilteredEvNrs
     return EventTime, EventRMS, MidBins, GroupedVRMS, FilteredRuns,FilteredEvNrs
 
 def StdCutRunEvtsFilter(EvRMSIdx,Runs,EvIdxs):
-    """Deletes the Event number associated to the timetrace for which the index of its VRMS value in the total list of VRMS values is given."""
-    PastElements=0
-    for RunIdx in range(len(Runs)):
+    """Deletes the Event number associated to the timetrace for which the index of its VRMS value in the total list of VRMS values is given.
+    Parameters:
+    EvRMSIdx=index of the to be deleted event in the total list of VRMS values
+    Runs=list of all the runs for which the analysis is being performed
+    EvIdxs=Nested list containing the event indices for each run seperately
+    """
+    PastElements=0 #Keeps track of how many elements are already passed in EvIdxs
+    for RunIdx in range(len(Runs)): #Loop over the lists of event indices for each run
         if type(EvIdxs[RunIdx])==np.int64:
             print("Run:" + str(Runs[RunIdx]))
             print(EvIdxs[RunIdx])
-        if PastElements + len(EvIdxs[RunIdx])>EvRMSIdx:
-            #print("Stdcut got rid of Run" + str(Runs[RunIdx]) + "EvNr" + str(EvIdxs[RunIdx][EvRMSIdx-PastElements]))
-            if len(EvIdxs[RunIdx])==1:
+        if PastElements + len(EvIdxs[RunIdx])>EvRMSIdx: #Checks whether the to be deleted event is in the current list of event indices
+            if len(EvIdxs[RunIdx])==1: #If this is the last event in the list for this run, delete this run from the runlist
                 Runs=np.delete(Runs, RunIdx)
                 EvIdxs.pop(RunIdx)
                 return Runs, EvIdxs
-            SubEvIdx=EvRMSIdx-PastElements
-            EvIdxs[RunIdx]=np.delete(EvIdxs[RunIdx],SubEvIdx)
+            SubEvIdx=EvRMSIdx-PastElements #Compute the index of EvRMSIdx in the list of indices for the run specifically
+            EvIdxs[RunIdx]=np.delete(EvIdxs[RunIdx],SubEvIdx) #Delete the event index
             return Runs, EvIdxs
-        else:
+        else: #If the event to be deleted is not in the current list of event indices for this run, add how many events were in this list and go to the list of indices for the next run
             PastElements+=len(EvIdxs[RunIdx])
             continue
     return Runs, EvIdxs
 
 def TransitCurvePlot(StNr,ChNr,FileId,TimeFormat="LST"):
-    "Plots transit curve results from npy files"
-    #import matplotlib.pyplot as plt
-    
-
+    """Plots transit curve results from npy files.
+    Parameters:
+    StNr=Station number.
+    ChNr= Channel Number
+    FileId= name of the file
+    TimeFormat= String: Dictates what timeformat is written the x-axis, does not transform unix time to the chosen timeformat, visual effect only! Options: "LST": local sidereal time, "LT": Local time & "UTC": UTC time
+    """
+    #Read in stored results
     FilteredEvNrs=np.load("FilteredEvNrs_"+FileId+".npy",allow_pickle=True)
     FilteredRuns=np.load("FilteredRuns_"+FileId+".npy",allow_pickle=True)
     GroupedVRMS=np.load("GroupedVRMS_"+FileId+".npy",allow_pickle=True)
@@ -279,296 +225,94 @@ def TransitCurvePlot(StNr,ChNr,FileId,TimeFormat="LST"):
     EventTime=np.load("EventTime_"+FileId+".npy",allow_pickle=True)
     EventRMS=np.load("EventRMS_"+FileId+".npy",allow_pickle=True)
     
-#     EventTimeCounts, EventTimeBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
-#     #Compute std per bin
-        
-#     EventTimeDig=np.digitize(EventTime,EventTimeBins)
-#     GroupedVRMS=np.empty((NBins,),dtype=object)
-#     for i in range(len(EventTimeDig)):
-#         GroupedVRMS[EventTimeDig[i]-1]=np.append(GroupedVRMS[EventTimeDig[i]-1],EventRMS[i])
-#     ##Get rid of "None" entries in beginning of array
-#     for i in range(len(GroupedVRMS)):
-#         GroupedVRMS[i]=np.delete(GroupedVRMS[i], 0)
-
-    #MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)]) 
+    #Compute relevant statistics
     VRMSStd=np.array([np.std(GroupedVRMS[i])/np.sqrt(len(GroupedVRMS[i])) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
     VRMSDistStd=np.array([np.std(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
     VRMSMedian=np.array([np.median(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
-    
     VRMSAvg=np.array([np.mean(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
     
-    AmtEntries=0
-    for i in range(len(FilteredEvNrs)):
-        AmtEntries+=len(FilteredEvNrs[i])
-        
+    #Count the amount of entries in the transit curve
     AmtEntries=0
     for i in range(len(GroupedVRMS)):
         AmtEntries+=len(GroupedVRMS[i])
     
     plt.figure(figsize=(15,5))
     plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(AmtEntries)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-    #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
-    # if True:
-    #     Nshift=int(len(MidBins)/2)
-    #     MidBins=np.roll(MidBins,Nshift)
     plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-    # for i in range(len(GroupedVRMS)):
-    #     plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-    #plt.plot(MidBins,1000*VRMSAvg,'r.')
-    #####plt.plot(EventTime,1000*EventRMS,'r.')
-    # plt.errorbar(MidBins,1000*VRMSAvg,yerr=3*1000*VRMSDistStd,fmt=".",zorder=2,c="b")
     plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-    #plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(len(FilteredRuns)) + " runs between run " + str(int(FilteredRuns[0])) + " and run " + str(int(FilteredRuns[-1])) + " throughout the day for " + str(len(MidBins)) + " bins")
     plt.title("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
-    #plt.ylim(0,5)
-    #plt.xlim(0,np.max(SamplingTimes*(10**9)))
-    plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
-    # if True:
-    #     plt.xlabel(TimeFormat + " Time + 12hr (hrs)",fontsize=20)#20)
-    plt.ylabel("V_RMS (mV)",fontsize=20)#20)
-    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
-    # if True:
-    #     plt.xticks(np.roll(np.arange(0, 24, 1.0,dtype=str),Nshift),fontsize=25)#15)
-    plt.yticks(fontsize=25)#15)
-    #plt.legend()
-    plt.show()
-    
-def TransitCurvePlotOld(StNr,ChNr,FileId,NBins=24,TimeFormat="LST"):
-    "Plots transit curve results from npy files"
-    #import matplotlib.pyplot as plt
-    
-
-    FilteredEvNrs=np.load("FilteredEvNrs_"+FileId+".npy",allow_pickle=True)
-    FilteredRuns=np.load("FilteredRuns_"+FileId+".npy",allow_pickle=True)
-    EventRMS=np.load("EventRMS_"+FileId+".npy",allow_pickle=True)
-    EventTime=np.load("EventTime_"+FileId+".npy",allow_pickle=True)
-    
-    EventTimeCounts, EventTimeBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
-    #Compute std per bin
-        
-    EventTimeDig=np.digitize(EventTime,EventTimeBins)
-    GroupedVRMS=np.empty((NBins,),dtype=object)
-    for i in range(len(EventTimeDig)):
-        GroupedVRMS[EventTimeDig[i]-1]=np.append(GroupedVRMS[EventTimeDig[i]-1],EventRMS[i])
-    ##Get rid of "None" entries in beginning of array
-    for i in range(len(GroupedVRMS)):
-        GroupedVRMS[i]=np.delete(GroupedVRMS[i], 0)
-    
-    MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)]) 
-    VRMSStd=np.array([np.std(GroupedVRMS[i])/np.sqrt(len(GroupedVRMS[i])) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
-    VRMSMedian=np.array([np.median(GroupedVRMS[i]) for i in range(len(GroupedVRMS))])
-    
-    VRMSAvg=np.array([np.mean(GroupedVRMS[i]) for i in range(len(GroupedVRMS))])
-    
-    AmtEntries=0
-    for i in range(len(FilteredEvNrs)):
-        AmtEntries+=len(FilteredEvNrs[i])
-    
-    plt.figure(figsize=(15,5))
-    plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(AmtEntries)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-    #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
-    plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-    #for i in range(len(GroupedVRMS)):
-    #    plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-
-    #plt.plot(MidBins,1000*VRMSAvg,'r.')
-    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-    plt.title("V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(len(FilteredRuns)) + " runs between run " + str(int(FilteredRuns[0])) + " and run " + str(int(FilteredRuns[-1])) + " throughout the day for " + str(len(MidBins)) + " bins")
-    #plt.ylim(-50,50)
-    #plt.xlim(0,np.max(SamplingTimes*(10**9)))
     plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
     plt.ylabel("V_RMS (mV)",fontsize=20)#20)
     plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
     plt.yticks(fontsize=25)#15)
-    #plt.legend()
-    plt.show()
-
-def VRMSTimeOfDay(StNr,ChNr,Runs,t0,t1,TimeFormat="LST"):
-    """Plots the VRMS of each event of station StNr, channel ChNr during runs Runs which occur during times of the day t0 and t1 (t0<t1 & t0,t1 in [0,24]), given in timeformat TimeFormat (can be local sidereal time LST or local time LT)."""
-    EventRMS=np.array([]) #Array to store V_RMS value of each event
-    EventTime=np.array([])#Array to store timestamp of each event
-    for Run in Runs:
-        path=Path(StNr,Run)
-        if os.path.isdir(path+"/combined.root"):
-        # if os.path.isfile(path+"/waveforms.root"):
-
-            CombinedFile=GetCombinedFile(StNr,Run)
-            RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
-            EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-            TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')  
-            
-            for EvNr in EventNrs:
-                EvIdx=np.where(EventNrs==EvNr)[0][0]
-                if TimeFormat=="LST":
-                    t=LST(TriggerTimes,EvIdx)
-                elif TimeFormat=="LT":
-                    t=LT(TriggerTimes,EvIdx)
-                else:
-                    print("TimeFormat " + str(TimeFormat) + " is not supported.")
-                
-                if t0<=t<=t1:
-                    Vmean=np.mean(ADCtoVoltage(RadiantData[EvIdx][ChNr]))
-                    EventRMS=np.append(EventRMS,np.sqrt(np.mean([(V-Vmean)**2 for V in ADCtoVoltage(RadiantData[EvIdx][ChNr])])))
-
-    #plt.figure(figsize=(15,5))
-    plt.plot(np.arange(len(EventRMS)),1000*EventRMS,".")
-    plt.title(r"$V_{RMS}$ for the events of Channel" + str(ChNr) + " for runs between " + str(t0) + " & " + str(t1) + " hr " + TimeFormat)
-    plt.xlabel("Sample Nr")
-    plt.ylabel(r"$V_{RMS}$ (mV)")
-    plt.show()
-
-def EvntsPerRun(StNr,ChNr,Runs):
-    """Plots the amount of events per run for station StNr, channel ChNr during runs Runs."""
-    NRuns=0
-    AmountEvents=np.array([])
-    ValidRuns=np.array([])
-    for Run in Runs:
-        path=Path(StNr,Run)
-        #if os.path.isdir(path+"/combined.root"):
-        if os.path.isfile(path+"/combined.root"):
-            NRuns+=1
-            
-            CombinedFile=GetCombinedFile(StNr,Run)
-            RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
-            EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-            #TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')        
-            AmountEvents=np.append(AmountEvents,len(EventNrs))  
-            ValidRuns=np.append(ValidRuns,Run)  
-            
-    plt.figure()
-    plt.plot(ValidRuns,AmountEvents,".")
-    plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(AmountEvents)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-    plt.xlabel("Run Nr")
-    plt.ylabel("Amount of events")
-    plt.title("Amount of events per run for Station " + str(StNr) + ", channel " + str(ChNr))
-    plt.yscale("log")
     plt.show()
 
 def TrigInfo(StNr,ChNr,RunNr):
-    """Reads in the TriggerInfo databranch"""
+    """Reads in the TriggerInfo databranch.
+    StNr= Station number
+    ChNr= Channel number
+    RunNr= Run number
+    """
     # #If headerfile is present
     # CombinedFile=GetCombinedFile(StNr,RunNr)
     # TriggerInfo=CombinedFile['combined']['header']['trigger_info'].array(library='np')
-    
     HeaderFile=GetHeaderFile(StNr,RunNr)
-    TriggerInfo=HeaderFile['header']['trigger_info'].array(library='np')
+    TriggerInfo=HeaderFile['trigger_info'].array(library='np')
     return TriggerInfo
-
-def RunStartTime(StNr, Run):
-    """Returns the start time of a run in Unix time"""
-    CombinedFile=GetCombinedFile(StNr,Run)
-    TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np') 
-    #print(datetime.utcfromtimestamp(TriggerTimes[0]))
-    return TriggerTimes[0]
-
-def RunEndTime(StNr, Run):
-    """Returns the end time of a run in Unix time"""
-    CombinedFile=GetCombinedFile(StNr,Run)
-    TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np') 
-    #print(datetime.utcfromtimestamp(TriggerTimes[0]))
-    return TriggerTimes[-1]
-
-def RunsTimeRanges(StNr, Runs):
-    """Returns the time ranges of a list of runs in Unix time"""
-    TimeRanges=np.empty((0,2),float)
-    for Run in Runs:
-        path=Path(StNr,Run)
-        if os.path.isfile(path+"/combined.root"):
-            CombinedFile=GetCombinedFile(StNr,Run)
-            TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')
-            TimeRanges=np.concatenate((TimeRanges,np.array([[TriggerTimes[0],TriggerTimes[-1]]])),axis=0)
-        
-    #print(datetime.utcfromtimestamp(TriggerTimes[0]))
-    return TimeRanges
-
-def TimedRunList(OGStNr,StNr,RunsRange=[0,100]):
-    """Highly specific function that returns runs of a station StNr that occured during runs RunsRange of another station OGStNr"""
-    RunTimes=[RunStartTime(OGStNr, RunsRange[0]),RunStartTime(OGStNr, RunsRange[1])]
-    RunList=np.array([])
-    for Run in np.arange(0,1000,dtype=int):
-        path=Path(StNr,Run)
-        if os.path.isfile(path+"/combined.root"):
-            if RunTimes[0] < RunStartTime(StNr, Run) < RunTimes[1]:
-                RunList=np.append(RunList,Run)
-    return RunList
-
-def RunsInTimeframe(StNr,t0,t1,Runs=np.arange(1000)):
-    """Returns a list of all runs of this station which are within the given LST range [t0,t1] and in the run range Runs"""
-    RunList=np.array([],dtype=int) #Array to store run values
-    EventList=[]
-    for Run in Runs:
-        path=Path(StNr,Run)
-        #if os.path.isdir(path+"/combined.root"):
-        if os.path.isfile(path+"/combined.root"):
-
-            CombinedFile=GetCombinedFile(StNr,Run)
-            RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
-            EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-            TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np') 
-            for EvNr in EventNrs:
-                EvIdx=np.where(EventNrs==EvNr)[0][0]
-                if t0<=LST(TriggerTimes,EvIdx)<=t1:
-                    if not Run in RunList:
-                        RunList=np.append(RunList,int(Run))
-                        EventList.append([EvNr])
-                    else:
-                        EventList[-1].append(EvNr)  
-
-    return RunList, EventList
-
 
 # # TransCurveEnvInsp:
 
 def GrafanaData(Nr,FileName):
-    '''Returns Temperature data of the place with number Nr in the cvs file.'''
+    """Returns Temperature data of the place with number Nr in the cvs file.
+    Parameters:
+    Nr= Column number of data read in from the csv file. Dictates what station is read in.
+    FileName= Name of the csv file
+    """
     import csv
-    from datetime import datetime
-    with open(FileName) as csv_file:
+    import datetime as dt
+    with open(FileName, encoding='utf-8') as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         line_count = 0
         Value=np.array([])
         Time=np.array([])
         for row in csv_reader:
-            if line_count == 0:
+            if line_count == 0: #The first row contains the name of the station
                 Name=row[Nr+1]
                 line_count += 1
-                #print("length of row is " + str(len(row)))
-            elif len(row)==0:
+            elif len(row)==0: #Stop when there's no data left to read
                 break
             else:
-                #print(row)
-                if row[Nr+1]!="":
-                    #time=row[0]
+                if row[Nr+1]!="": #If row of data is not empty, read in data
                     time=dt.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
                     DataCount=0
                     data=float(row[Nr+1])
                     Time=np.append(Time,time)
                     Value=np.append(Value,data)
-                    #for data in row[1:]:
-                    #    if data!='':
-                    #        1+1
-                    #        Time=np.append(Time,time)
-                    #        Temp=np.append(Temp,data)
-                    
-                #print(f'\t{row[0]} works in the {row[1]} department, and was born in {row[2]}.')
-                #print(row)
                 line_count += 1
             if line_count%50000==0:
                 print("progress of " + Name + " " + str(Nr) + "/" + str(len(row)-1) +" : " + str(np.round(100*line_count/477430,2)) + '%', end="\r")
-        #print(f'Processed {line_count} lines.')
-        #print(Data)
         return Name, Time, Value
-
-def DailyGrafanaAvg(LocNr,FileName,TimeRanges,NBins=24,TimeFormat="UTC"):
-    "Plots the average of a physical quantity at location number LocNr provided as a csv file FileName from Grafana as a function of LST during a set time ranges TimeRanges (with shape (x,2) in Unix time)"
-    from datetime import datetime
-    Name, AllTime, AllVal = GrafanaData(LocNr,FileName)
     
+def DailyGrafanaAvg(LocNr,FileName,StNr,Runs,NBins=24,TimeFormat="UTC"):
+    """Plots the average of a physical quantity at location number LocNr provided as a csv file FileName from Grafana as a function of LST during a set time ranges TimeRanges (with shape (x,2) in Unix time).
+    Parameters:
+    LocNr= Column number of data read in from the csv file. Dictates what station is read in.
+    FileName= Name of the csv file.
+    StNr= Station number.
+    Runs= List of runs for which this analysis should be performed.
+    NBins= amount of bins the plot should be divided in.
+    TimeFormat= String: Dictates what timeformat the x-axis will be in. Options: "LT": Local time & "UTC": UTC time
+    """
+    from datetime import datetime
+    #Read in data
+    Name, AllTime, AllVal = GrafanaData(LocNr,FileName)
+    RunListUnixTimes=np.array([(GetHeaderFile(StNr,Run)["trigger_time"].array(library='np')[0],GetHeaderFile(StNr,Run)["trigger_time"].array(library='np')[-1]) for Run in Runs])
     Val=np.array([]) #Array to store value of each sample in the timeranges
     Time=np.array([])#Array to store timestamp of each sample in the timeranges
     
+    #Collect the environmental datapoints that occured during one of the runs under study
     for i in np.arange(len(AllTime)):
-        for TimeRange in TimeRanges:
+        for TimeRange in RunListUnixTimes:
             if datetime.utcfromtimestamp(TimeRange[0])<AllTime[i]<datetime.utcfromtimestamp(TimeRange[1]) and (not AllTime[i] in Time):
                 Val=np.append(Val,AllVal[i])
                 T=AllTime[i].hour+AllTime[i].minute/60 + AllTime[i].second/3600
@@ -578,15 +322,14 @@ def DailyGrafanaAvg(LocNr,FileName,TimeRanges,NBins=24,TimeFormat="UTC"):
                     Time=np.append(Time, (T-2)%24)
                 else:
                     print("Enter a valid TimeFormat")
-    TimeCounts, TimeBins=np.histogram(Time, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
+                    
     #Make a histogram of the V_RMS value fully added in its respective bin by adding V_RMS as a weigth to the additions to the histogram
+    TimeCounts, TimeBins=np.histogram(Time, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
     ValCounts, ValBins=np.histogram(Time, bins=NBins,range=(0,24),density=False,weights=Val)    
-
-   
     MidBins= np.array([(TimeBins[i] + TimeBins[i+1])/2 for i in range(0,len(TimeBins)-1)])           
     ValAvg=np.array([ValCounts[i]/TimeCounts[i]  if TimeCounts[i] !=0 else 0 for i in range(len(ValCounts))])
     
-    #Compute std per bin
+    #Group in bins
     TimeDig=np.digitize(Time,TimeBins)
     GroupedVal=np.empty((NBins,),dtype=object)
     for i in range(len(TimeDig)):
@@ -594,51 +337,35 @@ def DailyGrafanaAvg(LocNr,FileName,TimeRanges,NBins=24,TimeFormat="UTC"):
     ##Get rid of "None" entries in beginning of array
     for i in range(len(GroupedVal)):
         GroupedVal[i]=np.delete(GroupedVal[i], 0) 
-    ValStd=np.array([np.std(GroupedVal[i]) for i in range(len(GroupedVal))])
+    #Compute std per bin
+    ValStd=np.array([np.std(GroupedVal[i])/np.sqrt(len(GroupedVal[i])) if len(GroupedVal[i])!=0 else 0 for i in range(len(GroupedVal))])
     
     plt.figure(figsize=(15,5))
     plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(TimeCounts)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-    #for i in range(len(GroupedVal)):
-    #    plt.plot(MidBins[i]*np.ones(len(GroupedVal[i])),GroupedVal[i])
     plt.errorbar(MidBins,ValAvg,yerr=ValStd,fmt=".")
     plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
     plt.title("Average value for " + str(Name) + " with " + str(NBins) + " bins")
-    #plt.ylim(-50,50)
-    #plt.xlim(0,np.max(SamplingTimes*(10**9)))
     plt.xlabel(TimeFormat + " Time (hrs)",fontsize=20)#20)
     plt.ylabel("A.U.",fontsize=20)#20)
     plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
     plt.yticks(fontsize=25)#15)
-    #plt.legend()
     plt.show()
     return Name, Time, Val
 
-def TriggerFilter(StNr, ChNr, Runs,has_rf0,has_rf1,has_ext,has_pps,has_soft):
-    """Returns the runs following the trigger demands"""
-    RunsEvts=np.empty((1,2),dtype=int)
-    Requirements=[has_rf0,has_rf1,has_ext,has_pps,has_soft]
-           
-    for Run in Runs:
-        path=Path(StNr,Run)
-        if os.path.isfile(path+"/combined.root") :
-            CombinedFile=GetCombinedFile(StNr,Run)
-            EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-            TriggerInfo=TrigInfo(StNr,ChNr,Run)
-            for EvIdx in range(len(EventNrs)):
-                Triggers=[TriggerInfo["trigger_info.radiant_info.RF_window[2]"][EvIdx][0],TriggerInfo["trigger_info.radiant_info.RF_window[2]"][EvIdx][1],TriggerInfo["trigger_info.ext_trigger"][EvIdx],TriggerInfo["trigger_info.pps_trigger"][EvIdx],TriggerInfo["trigger_info.force_trigger"][EvIdx]] 
-                if all([Triggers[i]==Requirements[i] or not Requirements[i] in [1,0] for i in range(len(Triggers))]):
-                    #RunsEvts=np.append(RunsEvts,[Run,EvIdx])
-                    RunsEvts=np.concatenate((RunsEvts,np.array([[Run,EventNrs[EvIdx]]])),axis=0)
-
-    return RunsEvts[1:]
-
-def TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
-    """Returns the runs and events following the trigger demands"""
-    #RunsEvts=np.empty((1,2),dtype=int)
+def TriggerFilter(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
+    """Returns the runs and events following the trigger demands.
+    Parameters:
+    StNr= Station number.
+    ChNr=Channel number.
+    Runs= List of runs for which this analysis should be performed.
+    has_rf= if 0 or 1: demands the data to have an rf trigger of False or True. If it is any other number, it is ignored.
+    has_ext= if 0 or 1: demands the data to have an ext trigger of False or True. If it is any other number, it is ignored.
+    has_pps= if 0 or 1: demands the data to have a pps trigger of False or True. If it is any other number, it is ignored.
+    has_soft= if 0 or 1: demands the data to have an forced trigger of False or True. If it is any other number, it is ignored.
+    """
     FilteredRuns=np.array([],dtype=int)
     FilteredEvNrs=[]
     Requirements=[has_rf,has_ext,has_pps,has_soft]
-           
     for Run in Runs:
         path=Path(StNr,Run)
         # if os.path.isfile(path+"/combined.root"):
@@ -646,34 +373,50 @@ def TriggerFilterAlt(StNr, ChNr, Runs,has_rf,has_ext,has_pps,has_soft):
             # # If Combined file is present
             # CombinedFile=GetCombinedFile(StNr,Run)
             # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-            
             WaveformsFile=GetWaveformsFile(StNr,Run)
-            EventNrs=WaveformsFile['waveforms']['event_number'].array(library="np")
-            
+            if WaveformsFile==None:
+                continue
+            EventNrs=WaveformsFile['event_number'].array(library="np")    
             TriggerInfo=TrigInfo(StNr,ChNr,Run)
             for EvIdx in range(len(EventNrs)):
-                if TriggerInfo['trigger_info.which_radiant_trigger'][EvIdx]<-100:
-                    HasRFTrigger=0
+                #Try to use the which_radiant_trigger, if it is not present just give it the surface_trigger value
+                try:
+                    TriggerInfo['trigger_info.which_radiant_trigger'][EvIdx]
+                except:
+                    HasRFTrigger=TriggerInfo['trigger_info.surface_trigger'][EvIdx]  #Placeholder instant filter laten passen, vraag na waar je anders RF trigger kan testen
+                    #if HasRFTrigger:
+                    #print(TriggerInfo.keys())
+                    #continue
+                # print("surface_trigger:",TriggerInfo['trigger_info.surface_trigger'][EvIdx],", TriggerInfo['trigger_info.which_radiant_trigger'][EvIdx]<-100", TriggerInfo['trigger_info.which_radiant_trigger'][EvIdx]<-100)
                 else:
-                    HasRFTrigger=1
+                    if TriggerInfo['trigger_info.which_radiant_trigger'][EvIdx]<-100:
+                        HasRFTrigger=0
+                    else:
+                        HasRFTrigger=1
                 Triggers=[HasRFTrigger,TriggerInfo["trigger_info.ext_trigger"][EvIdx],TriggerInfo["trigger_info.pps_trigger"][EvIdx],TriggerInfo["trigger_info.force_trigger"][EvIdx]] 
+                #If the trigger requirements are met, add run/event to filtered list
                 if all([Triggers[i]==Requirements[i] or not Requirements[i] in [1,0] for i in range(len(Triggers))]):
-                    #RunsEvts=np.append(RunsEvts,[Run,EvIdx])
                     if not Run in FilteredRuns:
                         FilteredRuns=np.append(FilteredRuns,int(Run))
                         FilteredEvNrs.append(np.array([],dtype=int))
                     FilteredEvNrs[-1]=np.append(FilteredEvNrs[-1],int(EventNrs[EvIdx]))
-                    #RunsEvts=np.concatenate((RunsEvts,np.array([[Run,EventNrs[EvIdx]]])),axis=0)
-
-    #return RunsEvts[1:]
+                else:
+                    continue
     return FilteredRuns,FilteredEvNrs
 
 
 # # Frequency windows:
 
 def NotchFilters(CritFreqs,Q,Freqs,SamplingRate):
-    """Returns a combination of Notch filters with critical frequencies CritFreqs, a characteristic factor Q typical for a Notch filter. The resulting filter is evaluated at frequencies Freqs, with a sampling rate SamplingRate."""
+    """Returns a combination of Notch filters with critical frequencies CritFreqs, a characteristic factor Q typical for a Notch filter. The resulting filter is evaluated at frequencies Freqs, with a sampling rate SamplingRate.
+    Parameters:
+    CritFreqs= List of frequencies that need to be filtered out.
+    Q=Characteristic Q factor, specific to the Notch filter.
+    Freqs= Frequencies to evaluate the filter at
+    SamplingRate= Sampling rate to be used.
+    """
     from scipy import signal
+    #Collect all Notch filters for the different critical frequencies
     NotchFilters=np.empty((1,len(Freqs)),dtype=object)
     for freq in CritFreqs:
         b,a=signal.iirnotch(freq, Q, fs=SamplingRate)
@@ -681,205 +424,34 @@ def NotchFilters(CritFreqs,Q,Freqs,SamplingRate):
         freqa, h = signal.freqz(b, a, worN=2*np.pi*Freqs,fs=2*np.pi*SamplingRate)        
         NotchFilters=np.concatenate((NotchFilters,np.array([np.abs(h)])),axis=0)
     NotchFilters=np.delete(NotchFilters,0,0)
+    #Produce a total filter by multiplying all the filters together
     TotalFilter=np.prod(NotchFilters,axis=0)
-    #plt.figure()
-    #plt.plot(Freqs,TotalFilter)
-    #plt.xlim(0,1.5*10**9)
-    #plt.xlim(3*10**8,5*10**8)
-    #plt.show()
     return TotalFilter
 
 def LowpassButter(CritFreq,N,Freqs):
-    """Returns a lowpaww Butterworth filter at critical frequency CritFreq and a scaling factor N, which is evaluated at frequencies Freqs."""
+    """Returns a lowpass Butterworth filter at critical frequency CritFreq and a scaling factor N, which is evaluated at frequencies Freqs.
+    Parameters:
+    CritFreq=Critical frequency up to where the Lowpass Butterworth filter has to filter out.
+    N= Scaling factor, characterisitc for the Butterworth filter.
+    Freqs=Frequencie at which this filter has to be evaluated.
+    """
     from scipy import signal
     b,a=signal.butter(N, 2*np.pi*CritFreq, btype='low', analog=True, output='ba', fs=None)
     w, h = signal.freqs(b, a,worN=2*np.pi*Freqs)
-    #plt.figure()
-    #plt.plot(Freqs,TotalFilter)
-    #plt.xlim(0,1.5*10**9)
-    #plt.xlim(3*10**8,5*10**8)
-    #plt.show()
     return np.abs(h)
 
 
 # # GalaxyNoiseSpectrum:
 
-def GalacticNoiseSpectrum(StNr,ChNr,Run,EvtNr,Plot=False):
-    """Plots the VRMS of galactic noise as a function of time of the day for station StNr, channel ChNr during run Run for event EvtNr by using the NuRadioReco software."""
-    #import NuRadioReco.modules.channelGalacticNoiseSpectrum
-    #import Galactic_noise.channelGalacticNoiseSpectrum as channelGalacticNoiseSpectrum
-    import NuRadioReco.modules.channelGenericNoiseAdder.py as ChannelGalacticNoiseAdder
-    from NuRadioReco.detector import detector
-    from NuRadioReco.utilities import units
-    from NuRadioReco.framework import event,station, channel
-    import NuRadioReco.modules.RNO_G.hardwareResponseIncorporator
-    from datetime import datetime
-    from datetime import timedelta
-    import scipy.fft as scfft
-    
-    # CombinedFile=GetCombinedFile(StNr,Run)
-    # RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
-    # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-    # TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')  
-    
-    WaveFormFile=GetWaveformsFile(StNr,Run)
-    HeaderFile=GetHeaderFile(StNr,Run)
-    RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
-    EventNrs=WaveFormFile['waveforms']['event_number'].array(library="np")
-    TriggerTimes=HeaderFile['header']["trigger_time"].array(library='np')
-    
-    EvIdx=np.where(EventNrs==EvtNr)[0][0]
-    Date=datetime.utcfromtimestamp(TriggerTimes[EvIdx])# - timedelta(hours=2, minutes=0)
-    
-    #Obtaining path to relevant json file for detector description
-    detpath = os.path.dirname(detector.__file__)
-    #detpath+="/RNO_G/RNO_season_2021.json"
-    detpath+="/RNO_G/RNO_season_2022.json"
-    
-    GNDetector = detector.Detector(json_filename = detpath)#,antenna_by_depth=False)
-    GNDetector.update(Date) #date in example
-    GNEvent=event.Event(Run,EvtNr)
-    GNStation=station.Station(StNr)
-    GNStation.set_station_time(Date)
-    GNChannel=channel.Channel(ChNr)
-    GNChannel.set_trace(trace=np.zeros(2048), sampling_rate=3.2 * units.GHz)
-    GNStation.add_channel(GNChannel) 
-    
-    
-    
-    # channelGalacticNoiseAdder = ChannelGalacticNoiseAdder.channelGalacticNoiseAdder()
-    # channelGalacticNoiseAdder.begin(debug=False,n_side=4,interpolation_frequencies=np.arange(10 * units.MHz, 1100 * units.MHz,100*units.MHz))
-    # GalacticNoiseTrace=channelGalacticNoiseAdder.run(GNEvent,GNStation,GNDetector,passband=[10 * units.MHz, 1000 * units.MHz])
-    
-    
-    # GNchannelGalacticNoiseAdder = channelGalacticNoiseSpectrum.channelGalacticNoiseAdder()
-    # channelGenericNoiseAdder.run(event, station, det, amplitude=cfg['Vrms_thermal_noise'],
-    #                                   min_freq=cfg['T_noise_min_freq'], max_freq=cfg['T_noise_max_freq'],
-    #                                   type='rayleigh')
-    channelGalacticNoiseAdder.run(GNEvent, GNStation, GNDetector)
-    
-    hardwareResponseIncorporator.run(GNEvent, GNStation, GNDetector, sim_to_data=True)
-    
-    sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
-    TimeStep=1/sampling_rate #Time between two samples
-    SamplingTimes=np.arange(0,len(RadiantData[0][0])*TimeStep,TimeStep)
-    GalacticNoiseSpec=scfft.fft(GalacticNoiseTrace)
-    GalacticNoiseSpec=np.fft.fftshift(GalacticNoiseSpec)
-    freq=scfft.fftfreq(len(SamplingTimes),(SamplingTimes[-1]-SamplingTimes[0])/len(SamplingTimes))
-    freq=np.fft.fftshift(freq)
-    
-    #Incorporate hardware response
-    #from NuRadioReco.framework.base_trace import BaseTrace
-    #dummy_trace = BaseTrace()
-    #dummy_trace.set_trace(np.zeros(2048), 3.2*units.GHz)
-    #frequencies = dummy_trace.get_frequencies()
-    hardwareResponseIncorporator = NuRadioReco.modules.RNO_G.hardwareResponseIncorporator.hardwareResponseIncorporator()
-    GalacticNoiseSpec *= hardwareResponseIncorporator.get_filter(freq*units.Hz, GNStation.get_id(), GNChannel.get_id(), GNDetector, temp=293.15, sim_to_data=True, phase_only=False, mode=None, mingainlin=None)
-    
-    ## zero first bins to avoid DC offset
-    #trace_fft[0] = 0
-    
-    print(GNChannel.get_trace())
-    
-    if Plot:
-        plt.figure(figsize=(20,5))
-        plt.title("Galactic noise spectrum of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(Run) + ", event " + str(EvtNr) + " at " + str(Date.replace(microsecond=0) ) + " UTC",fontsize=20)
-        #plt.plot(GNChannel.get_frequencies()/units.MHz,np.abs(GalacticNoiseSpec))
-        plt.plot(freq,np.abs(GalacticNoiseSpec))
-        plt.xlim(0,1.5*10**9)
-        plt.show()
-    return freq, np.abs(GalacticNoiseSpec)
-
-def SimNoiseSpectrum(StNr,ChNr,Run,EvtNr,ThermalNoise=False,Plot=False):
-    """Compute the frequency spectrum of galactic noise using the NuRadioMC software."""
-    import NuRadioReco.modules.channelGalacticNoiseAdder as ChannelGalacticNoiseAdder
-    import NuRadioReco.modules.channelGenericNoiseAdder as ChannelGenericNoiseAdder
-    from NuRadioReco.detector import detector
-    from NuRadioReco.utilities import units
-    from NuRadioReco.framework import event,station, channel
-    import NuRadioReco.modules.RNO_G.hardwareResponseIncorporator
-    from datetime import datetime
-    from datetime import timedelta
-    import scipy.fft as scfft
-    
-    # CombinedFile=GetCombinedFile(StNr,Run)
-    # RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
-    # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
-    # TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')  
-    
-    WaveFormFile=GetWaveformsFile(StNr,Run)
-    HeaderFile=GetHeaderFile(StNr,Run)
-    RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
-    EventNrs=WaveFormFile['waveforms']['event_number'].array(library="np")
-    TriggerTimes=HeaderFile['header']["trigger_time"].array(library='np')
-    
-    EvIdx=np.where(EventNrs==EvtNr)[0][0]
-    Date=datetime.utcfromtimestamp(TriggerTimes[EvIdx])# - timedelta(hours=2, minutes=0)
-    
-    #Obtaining path to relevant json file for detector description
-    detpath = os.path.dirname(detector.__file__)
-    detpath+="/RNO_G/RNO_season_2022.json"
-    
-    GNDetector = detector.Detector(json_filename = detpath)#,antenna_by_depth=False)
-    GNDetector.update(Date) #date in example
-    GNEvent=event.Event(Run,EvtNr)
-    GNStation=station.Station(StNr)
-    GNStation.set_station_time(Date)
-    GNChannel=channel.Channel(ChNr)
-    GNChannel.set_trace(trace=np.zeros(2048), sampling_rate=3.2 * units.GHz)
-    GNStation.add_channel(GNChannel) 
-    
-    #     channelGenericNoiseAdder.run(event, station, det, amplitude=cfg['Vrms_thermal_noise'],
-#                                      min_freq=cfg['T_noise_min_freq'], max_freq=cfg['T_noise_max_freq'],
-#                                      type='rayleigh')
-
-    channelGalacticNoiseAdder = ChannelGalacticNoiseAdder.channelGalacticNoiseAdder()
-    channelGalacticNoiseAdder.begin(debug=False,n_side=4,interpolation_frequencies=np.arange(10 * units.MHz, 1100 * units.MHz,100*units.MHz))
-    channelGalacticNoiseAdder.run(GNEvent,GNStation,GNDetector,passband=[10 * units.MHz, 1000 * units.MHz])
-    
-    hardwareResponseIncorporator = NuRadioReco.modules.RNO_G.hardwareResponseIncorporator.hardwareResponseIncorporator()
-    hardwareResponseIncorporator.run(GNEvent, GNStation, GNDetector, sim_to_data=True)
-    print(GNChannel.get_trace())
-    
-    GalacticNoiseSpec=np.fft.fftshift(scfft.fft(GNChannel.get_trace()))
-    
-    sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
-    TimeStep=1/sampling_rate #Time between two samples
-    SamplingTimes=np.arange(0,len(RadiantData[0][0])*TimeStep,TimeStep)
-    freq=scfft.fftfreq(len(SamplingTimes),(SamplingTimes[-1]-SamplingTimes[0])/len(SamplingTimes))
-    freq=np.fft.fftshift(freq)
-    
-    if Plot:
-        # plt.figure(figsize=(20,5))
-        # plt.title("Galactic noise spectrum of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(Run) + ", event " + str(EvtNr) + " at " + str(Date.replace(microsecond=0) ) + " UTC",fontsize=20)
-        # #plt.plot(GNChannel.get_frequencies()/units.MHz,np.abs(GalacticNoiseSpec))
-        # plt.plot(freq,np.abs(GalacticNoiseSpec))
-        # plt.xlim(0,1.5*10**9)
-        # plt.show()
-        
-        plt.figure(figsize=(20,5))
-        plt.title("Galactic noise FFT of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(Run) + ", event " + str(EvtNr) + " at " + str(Date.replace(microsecond=0) ) + " UTC, using NuRadioMC",fontsize=20)
-        #plt.plot(GNChannel.get_frequencies()/units.MHz,np.abs(GalacticNoiseSpec))
-        #plt.plot(GNChannel.get_frequencies(),np.abs(GNChannel.get_frequency_spectrum()),label="NuRadioMC")
-        plt.plot(freq*units.Hz,np.abs(GalacticNoiseSpec))
-        plt.show()
-        
-        plt.figure(figsize=(20,5))
-        plt.title("Galactic noise FFT of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(Run) + ", event " + str(EvtNr) + " at " + str(Date.replace(microsecond=0) ) + " UTC, using NuRadioMC",fontsize=20)
-        #plt.plot(GNChannel.get_frequencies()/units.MHz,np.abs(GalacticNoiseSpec))
-        #plt.plot(GNChannel.get_frequencies(),np.abs(GNChannel.get_frequency_spectrum()),label="NuRadioMC")
-        plt.plot(SamplingTimes,GNChannel.get_trace())
-        plt.legend()
-        plt.show()
-        
-        # plt.figure(figsize=(20,5))
-        # plt.title("Galactic noise timetrace of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(Run) + ", event " + str(EvtNr) + " at " + str(Date.replace(microsecond=0) ) + " UTC, using NuRadioMC",fontsize=20)
-        # #plt.plot(GNChannel.get_frequencies()/units.MHz,np.abs(GalacticNoiseSpec))
-        # plt.plot(GNChannel.get_times(),GNChannel.get_trace())
-        # plt.show()
-    return
-
 def SimNoiseTrace(StNr,ChNr,Run,EvtNr,ThermalNoise=False,Plot=False):
+    """Simulates a timetrace containing only galactic (and thermal) noise.
+    Parameters:
+    StNr= Station number
+    ChNr= Channel number
+    Run= Data run for which this should be simulated
+    EvtNr= Event Number for which this should be simulated
+    ThermalNoise= Boolean, if True: thermal noise is included in the simulation.
+    """    
     import NuRadioReco.modules.channelGalacticNoiseAdder as ChannelGalacticNoiseAdder
     import NuRadioReco.modules.channelGenericNoiseAdder as ChannelGenericNoiseAdder
     import NuRadioReco.examples.cr_efficiency_analysis.helper_cr_eff as hcr
@@ -897,9 +469,10 @@ def SimNoiseTrace(StNr,ChNr,Run,EvtNr,ThermalNoise=False,Plot=False):
     # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
     # TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np')  
     
+    #Import data
     WaveFormFile=GetWaveformsFile(StNr,Run)
     HeaderFile=GetHeaderFile(StNr,Run)
-    RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
+    #RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
     EventNrs=WaveFormFile['waveforms']['event_number'].array(library="np")
     TriggerTimes=HeaderFile['header']["trigger_time"].array(library='np')
     
@@ -923,20 +496,15 @@ def SimNoiseTrace(StNr,ChNr,Run,EvtNr,ThermalNoise=False,Plot=False):
     GNChannel.set_trace(trace=np.zeros(2048), sampling_rate=3.2 * units.GHz)
     GNStation.add_channel(GNChannel) 
 
-    
+    #Set relevant thermal noise parameters to the default value from the example
     TNoise,Noise_max_freq,Noise_min_freq=275,1100 * units.MHz,10 * units.MHz
     if ThermalNoise:
-        #Set relevant thermal noise parameters to the default value from the example
-        #TNoise,Tnoise_max_freq,Tnoise_min_freq=300,1100 * units.MHz,10 * units.MHz
-
-        #Add generic (thermal) noise
         channelGenericNoiseAdder = NuRadioReco.modules.channelGenericNoiseAdder.channelGenericNoiseAdder()
         channelGenericNoiseAdder.begin()
         channelGenericNoiseAdder.run(GNEvent, GNStation, GNDetector, amplitude=hcr.calculate_thermal_noise_Vrms(T_noise=TNoise, T_noise_max_freq=Noise_max_freq, T_noise_min_freq=Noise_min_freq),min_freq=Noise_min_freq, max_freq=Noise_max_freq,type='rayleigh')
 
     #Add Galactic noise
     channelGalacticNoiseAdder = ChannelGalacticNoiseAdder.channelGalacticNoiseAdder()
-    #channelGalacticNoiseAdder.begin(debug=False,n_side=4,interpolation_frequencies=np.arange(10 * units.MHz, 1100 * units.MHz,100*units.MHz))
     channelGalacticNoiseAdder.begin(debug=False,n_side=16,interpolation_frequencies=np.arange(Noise_min_freq, Noise_max_freq,100*units.MHz))
     channelGalacticNoiseAdder.run(GNEvent,GNStation,GNDetector,passband=[10 * units.MHz, 1000 * units.MHz])
 
@@ -964,42 +532,45 @@ def SimNoiseTrace(StNr,ChNr,Run,EvtNr,ThermalNoise=False,Plot=False):
     return SamplingTimes, GNChannel.get_trace()
 
 def GalacticNoiseVRMSCurve(StNr,ChNr,Runs,EvNrs,FFTFilter=False,Lowpass=False,ZeroAvg=True, ThermalNoise=False,Plot=True):
+    """Simulates a transit curve containing galactic and/or thermal noise.
+    Parameters:
+    StNr= Station number
+    ChNr= Channel number
+    Rusn= List of runs for which this should be simulated
+    EvtNrs= Event Numbers for which this should be simulated
+    FFTFilter=Boolean: if true, applies a Notch filter to all frequency spectra to cut out frequencies which have shown to be potentially problematic
+    Lowpass= Boolean: if true, a butterworth lowpass filter will be applied in order to maintain only galactic noise dominated frequencies
+    ZeroAvg=ZeroAverages the simulates noise timetrace before its VRMS is calculated
+    ThermalNoise= Boolean, if True: thermal noise is included in the simulation.
+    """    
     sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
     EventRMS=np.array([])
     EventTime=np.array([])
     for RunNr in Runs:
-        RunIdx=np.where(Runs==RunNr)[0][0]
-        
         # CombinedFile=GetCombinedFile(StNr,RunNr)
         # RadiantData=CombinedFile['combined']['waveforms']['radiant_data[24][2048]'].array(library='np')
         # EventNrs=CombinedFile['combined']['waveforms']['event_number'].array(library="np")
         # TriggerTimes=CombinedFile['combined']['header']["trigger_time"].array(library='np') 
         
+        #Import Data
         WaveFormFile=GetWaveformsFile(StNr,RunNr)
         HeaderFile=GetHeaderFile(StNr,RunNr)
-        RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
+        #RadiantData=WaveFormFile['waveforms']['radiant_data[24][2048]'].array(library='np')
         EventNrs=WaveFormFile['waveforms']['event_number'].array(library="np")
         TriggerTimes=HeaderFile['header']["trigger_time"].array(library='np')
-            
+        RunIdx=np.where(Runs==RunNr)[0][0]
+        
         for EvNr in EvNrs[RunIdx]:
             EvIdx=np.where(EventNrs==EvNr)[0][0]
             EventTime=np.append(EventTime,LST(TriggerTimes,EvIdx))
-
-            #GNFreq,GNSpec=GalacticNoiseSpectrum(StNr,ChNr,RunNr,EvNr,Plot=False)
             SamplingTimes,GNTrace=SimNoiseTrace(StNr,ChNr,RunNr,EvNr,ThermalNoise,Plot=False)
-            
-            
-            if ZeroAvg==True:
+            if ZeroAvg==True: #Zero average the timetrace 
                     Vmean=np.mean(GNTrace)
                     GNTrace-=Vmean
-                    #EventRMS=np.append(EventRMS,np.sqrt(np.mean([(V-Vmean)**2 for V in ADCtoVoltage(RadiantData[EvIdx][ChNr])])))
+            #If a filter is required: convert to frequency domain and apply filter
             if FFTFilter or Lowpass:
                 import scipy.fft as scfft
-                # sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
-                # TimeStep=1/sampling_rate #Time between two samples
-                # SamplingTimes=np.arange(0,len(RadiantData[0][0])*TimeStep,TimeStep)
                 GNFreq=scfft.fftfreq(len(SamplingTimes),(SamplingTimes[-1]-SamplingTimes[0])/len(SamplingTimes))
-                # GNfreq=np.fft.fftshift(freq)
                 TotalFilter=np.ones(len(GNFreq))
                 if FFTFilter:
                     TotalFilter=np.multiply(TotalFilter,NotchFilters([403*10**6,120*10**6,807*10**6,1197*10**6],75,GNFreq,sampling_rate))
@@ -1007,105 +578,689 @@ def GalacticNoiseVRMSCurve(StNr,ChNr,Runs,EvNrs,FFTFilter=False,Lowpass=False,Ze
                     CritFreq=110*10**6
                     TotalFilter=np.multiply(TotalFilter,LowpassButter(CritFreq,20,GNFreq))
                 GNFFT=scfft.fft(GNTrace)
-                
-                # plt.figure(figsize=(20,5))
-                # plt.title("Galactic noise spectrum of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(RunNr) + ", event " + str(EvNr),fontsize=20)
-                # plt.plot(GNFreq,np.abs(GNFFT))
-                # plt.xlim(0,1.5*10**9)
-                # plt.show()
-                
-                # FFT=np.fft.fftshift(FFT)
                 GNFFT=np.array([GNFFT[i]*TotalFilter[i] for i in range(len(GNFreq))])
-                
-                # plt.figure(figsize=(20,5))
-                # plt.title("Galactic noise spectrum of Station " + str(StNr) + ", channel " + str(ChNr) + ", run " + str(RunNr) + ", event " + str(EvNr),fontsize=20)
-                # plt.plot(GNFreq,np.abs(GNFFT))
-                # plt.xlim(0,1.5*10**9)
-                # plt.show()
-                
                 GNTrace=np.abs(scfft.ifft(GNFFT))
             EventRMS=np.append(EventRMS,np.sqrt(np.mean([V**2 for V in GNTrace])))
-            
-            
-            
-#             sampling_rate=3.2 * (10**9) #Sampling rate in Hertz according to the python file of NuRadioReco.modules.io.rno_g
-#             GNSpec=scfft.fft(GalacticNoiseTrace)
-#             #GNSpec=np.fft.fftshift(GalacticNoiseSpec)
-#             GNFreq=scfft.fftfreq(len(SamplingTimes),(SamplingTimes[-1]-SamplingTimes[0])/len(SamplingTimes))
-#             #GNFreq=np.fft.fftshift(freq)
-            
-
-#             if Lowpass:
-#                 CritFreq=110*10**6
-#                 GNSpec=np.array([GNSpec[i]*LowpassButter(CritFreq,20,GNFreq)[i] for i in range(len(GNFreq))])
-#             if FFTFilter:
-#                 GNSpec=np.array([GNSpec[i]*NotchFilters([403*10**6,120*10**6,807*10**6,1197*10**6],75,GNFreq,sampling_rate)[i] for i in range(len(GNFreq))])
-                
-#              GNTrace=scfft.ifft(GNSpec)
-#              EventRMS=np.append(EventRMS,np.sqrt(np.sum(np.abs(GNSpec)**2)))
-
-
-    
-    
+   
     if Plot:
         plt.figure(figsize=(15,5))
-        #plt.figtext(0.2, 0.8, "Entries:" + str(np.sum(EventTimeCounts)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-        #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
-        #plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-        #for i in range(len(GroupedVRMS)):
-        #    plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-
-        #plt.plot(MidBins,1000*VRMSAvg,'r.')
         plt.plot(EventTime,1000*EventRMS,'.', markersize=20)
         plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
         plt.title("Galactic noise V_RMS of Station " + str(StNr) + ", channel " + str(ChNr) + " for " + str(len(EventRMS)) + " events")
-        #plt.ylim(0.8*np.min(EventRMS),1.2*np.max(EventRMS))
-        #plt.xlim(0,np.max(SamplingTimes*(10**9)))
         plt.xlabel("LST Time (hrs)",fontsize=20)#20)
         plt.ylabel("V_RMS (mV)",fontsize=20)#20)
         plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
         plt.yticks(fontsize=25)#15)
-        #plt.legend()
         plt.show()
     return EventTime,EventRMS
 
 def SimulatedGNCurve(FileId,NBins,StNr,ChNr):
-        import numpy as np
-        import matplotlib.pyplot as plt
-        SimEventRMS=np.load("SimEventRMS_" + str(FileId) + ".npy",allow_pickle=True)
-        SimEventTime=np.load("SimEventTime_" + str(FileId) + ".npy",allow_pickle=True)
+    """Plots a simulated transit curve from files.
+    Parameters:
+    FileId= Name of the file where the data is stored
+    NBins= Amount of bins that should be present in the transit curve
+    StNr= Station number
+    ChNr= Channel number
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    #Import Data
+    SimEventRMS=np.load("SimEventRMS_" + str(FileId) + ".npy",allow_pickle=True)
+    SimEventTime=np.load("SimEventTime_" + str(FileId) + ".npy",allow_pickle=True)
 
-        EventTimeCounts, EventTimeBins=np.histogram(SimEventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
-        #Compute std per bin
+    #Group data
+    MidBins, GroupedVRMS = GroupVRMS(SimEventRMS,SimEventTime,NBins)
+    
+    #Compute statistics
+    VRMSAvg=np.array([np.mean(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
+    VRMSStd=np.array([np.std(GroupedVRMS[i])/np.sqrt(len(GroupedVRMS[i])) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
+
+    plt.figure(figsize=(15,5))
+    plt.figtext(0.2, 0.8, "Simulations:" + str(len(SimEventRMS)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+    plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
+    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+    plt.title("Simulation of Galactic noise for station " + str(StNr) + ", channel " + str(ChNr), fontsize=25)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.yticks(fontsize=25)#15)
+    plt.show()
         
-        EventTimeDig=np.digitize(SimEventTime,EventTimeBins)
-        GroupedVRMS=np.empty((NBins,),dtype=object)
-        for i in range(len(EventTimeDig)):
-            GroupedVRMS[EventTimeDig[i]-1]=np.append(GroupedVRMS[EventTimeDig[i]-1],SimEventRMS[i])
-        ##Get rid of "None" entries in beginning of array
+    
+##### DataSimComparison
+
+def TransitCurveSingular(StNr,ChNr, DataSample,DataFileId,NBins=24):
+    """ Plots the data transit curve results from files stored away in the JobResults folder structure.
+    Parameters:
+    StNr= Station number.
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    DataFileId= Name of the file where the data is stored.
+    NBins= Amount of bins the transit curve should have.
+    """
+    #Plots the transit curves from JobsResults for a file with name "FileId, station StNr, channel ChNr, binned in NBins bins(set NBins=0 for the already binned data)"
+    #DataSample can be "C" for combined, "HC" for handcarry or "S" for Satellite     
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    #Read in data. If NBins=0, it is assumed that the data is already grouped
+    if NBins !=0:
+        EventRMS=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(DataFileId) + ".npy",allow_pickle=True)
+        EventTime=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(DataFileId) + ".npy",allow_pickle=True)
+        MidBins, GroupedVRMS = GroupVRMS(EventVRMS,EventTime,NBins)
+        DataEntries=len(EventRMS)
+    else:
+        GroupedVRMS=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId) + ".npy",allow_pickle=True)
+        MidBins=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "MidBins_" + str(DataFileId) + ".npy",allow_pickle=True)
+        DataEntries=0
         for i in range(len(GroupedVRMS)):
-            GroupedVRMS[i]=np.delete(GroupedVRMS[i], 0) 
-        
-        
-        MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)]) 
-        VRMSAvg=np.array([np.mean(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
-        VRMSStd=np.array([np.std(GroupedVRMS[i])/np.sqrt(len(GroupedVRMS[i])) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
+            DataEntries+=len(GroupedVRMS[i])
+    
+    #Compute statistics
+    VRMSAvg=np.array([np.mean(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
+    VRMSStd=np.array([np.std(GroupedVRMS[i])/len(GroupedVRMS[i]) if len(GroupedVRMS[i])!=0 else 0 for i in range(len(GroupedVRMS))])
 
+    plt.figure(figsize=(15,5))
+    if NBins !=0:
+        plt.errorbar(MidBins,VRMSAvg,yerr=VRMSStd,fmt=".",zorder=2,markersize=10)
+        plt.title("Simulation of Galactic noise for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.figtext(0.2, 0.8, "Simulations:" + str(len(EventRMS)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+    else:
+        plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2,markersize=10)
+        plt.title("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.figtext(0.2, 0.8, "Entries:" + str(DataEntries), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.yticks(fontsize=25)#15)
+    plt.show()
+    return
+        
+def TransitCurveComparison(StNr,ChNr,DataSample, DataFileId,SimFileId):
+    """ Plots the data and simulation transit curve results from files stored away in the JobResults folder structure.
+    Parameters:
+    StNr= Station number.
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    DataFileId= Name of the file where the data is stored.
+    SimFileId= Name of the file where the simulated results are stored.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+        
+    #Import data
+    SimEventRMS=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileId) + ".npy",allow_pickle=True)
+    SimEventTime=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileId) + ".npy",allow_pickle=True)
+    DataGroupedVRMS=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId) + ".npy",allow_pickle=True)
+    DataMidBins=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "MidBins_" + str(DataFileId) + ".npy",allow_pickle=True)
+    NBins=len(DataMidBins)
+       
+    #Group data
+    SimMidBins, SimGroupedVRMS = GroupVRMS(SimEventRMS,SimEventTime,NBins)
+        
+    #Calculate statistics
+    SimVRMSAvg=np.array([np.mean(SimGroupedVRMS[i]) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+    SimVRMSStd=np.array([np.std(SimGroupedVRMS[i])/np.sqrt(len(SimGroupedVRMS[i])) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+    DataVRMSAvg=np.array([np.mean(DataGroupedVRMS[i]) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])
+    DataVRMSStd=np.array([np.std(DataGroupedVRMS[i])/np.sqrt(len(DataGroupedVRMS[i])) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])
+    DataVRMSMedian=np.array([np.median(DataGroupedVRMS[i]) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])
+    SimVRMSMedian=np.array([np.median(SimGroupedVRMS[i]) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+        
+    #Compute amount of entries in the transit curve
+    DataEntries=0
+    for i in range(len(DataGroupedVRMS)):
+        DataEntries+=len(DataGroupedVRMS[i])
+              
+    #Set simulated transit curve onto the same average as the data and keep track of this offset
+    SimOffset=np.mean(SimVRMSAvg)-np.mean(DataVRMSAvg)
+    SimVRMSAvg-=SimOffset
+
+    if SimOffset>0:
+        OffsetStr="-" + str(np.round(1000*SimOffset,3))
+    else:
+        OffsetStr= "+" + str(np.abs(np.round(1000*SimOffset,3)))
+    fig, axs = plt.subplots(2,1,figsize=(15,7.5), gridspec_kw={'height_ratios': [2, 1]})
+    fig.suptitle("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),x=0.5,y=0.94,fontsize=25)
+    plt.subplots_adjust(hspace=0)
+    for ax in axs:
+        ax.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        ax.set_xticks(np.arange(0, 24, 1.0))
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(20)
+    axs[0].set_ylabel("V_RMS (mV)",fontsize=20)
+    axs[1].set_ylabel("Data/Sim",fontsize=20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    axs[0].errorbar(DataMidBins,1000*DataVRMSAvg,yerr=1000*DataVRMSStd,fmt=".",zorder=2,label="Data")#,markersize=15)
+    axs[0].errorbar(SimMidBins,1000*SimVRMSAvg,yerr=1000*SimVRMSStd,fmt=".",zorder=2,label="Simulation " + OffsetStr + "mV")#,markersize=15)
+    VRMSRatio=DataVRMSAvg/SimVRMSAvg
+    VRMSRatioStd=VRMSRatio*np.sqrt((DataVRMSStd/DataVRMSAvg)**2 + (SimVRMSStd/SimVRMSAvg)**2)
+    axs[1].axhline(y = 1, color = 'k', linestyle = ':',alpha=1)
+    axs[1].errorbar(SimMidBins,VRMSRatio,yerr=1000*SimVRMSStd,fmt=".",zorder=2,label="Simulation " + OffsetStr + "mV")#,markersize=15)
+    axs[0].legend(loc="lower left",fontsize=15)
+    return
+    
+def TransitCurveComparisonCleanPlot(StNr,ChNr,DataSample, DataFileId,SimFileId):
+    """ Plots the data and simulation transit curve results from files stored away in the JobResults folder structure. Clean version for the paper.
+    Parameters:
+    StNr= Station number.
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    DataFileId= Name of the file where the data is stored.
+    SimFileId= Name of the file where the simulated results are stored.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+        
+    #Import data
+    SimEventRMS=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileId) + ".npy",allow_pickle=True)
+    SimEventTime=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileId) + ".npy",allow_pickle=True)
+    DataGroupedVRMS=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId) + ".npy",allow_pickle=True)
+    DataMidBins=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "MidBins_" + str(DataFileId) + ".npy",allow_pickle=True)
+    NBins=len(DataMidBins)
+        
+    #Group data
+    SimMidBins, SimGroupedVRMS = GroupVRMS(SimEventRMS,SimEventTime,NBins)    
+    
+    #Calculate statistics
+    SimVRMSAvg=np.array([np.mean(SimGroupedVRMS[i]) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+    SimVRMSStd=np.array([np.std(SimGroupedVRMS[i])/np.sqrt(len(SimGroupedVRMS[i])) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+    DataVRMSAvg=np.array([np.mean(DataGroupedVRMS[i]) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])
+    DataVRMSStd=np.array([np.std(DataGroupedVRMS[i])/np.sqrt(len(DataGroupedVRMS[i])) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])    
+    DataVRMSMedian=np.array([np.median(DataGroupedVRMS[i]) if len(DataGroupedVRMS[i])!=0 else 0 for i in range(len(DataGroupedVRMS))])
+    SimVRMSMedian=np.array([np.median(SimGroupedVRMS[i]) if len(SimGroupedVRMS[i])!=0 else 0 for i in range(len(SimGroupedVRMS))])
+    
+    #Compute amount of entries in the transit curve
+    DataEntries=0
+    for i in range(len(DataGroupedVRMS)):
+        DataEntries+=len(DataGroupedVRMS[i])
+            
+    #Set simulated transit curve onto the same average as the data and keep track of this offset
+    SimOffset=np.mean(SimVRMSAvg)-np.mean(DataVRMSAvg)
+    SimVRMSAvg-=SimOffset
+
+    if SimOffset>0:
+        OffsetStr="-" + str(np.round(1000*SimOffset,3))
+    else:
+        OffsetStr= "+" + str(np.abs(np.round(1000*SimOffset,3)))
+    fig, axs = plt.subplots(2,1,figsize=(15,7.5), gridspec_kw={'height_ratios': [2, 1]})
+    plt.subplots_adjust(hspace=0)
+    for ax in axs:
+        ax.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        ax.set_xticks(np.arange(0, 25, 2.0))
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(20)
+    axs[0].set_ylabel(r"V$_{RMS}$ (mV)",fontsize=20)
+    axs[1].set_ylabel("Data/Sim",fontsize=20)
+    plt.xticks(np.arange(0, 25, 2.0),fontsize=25)#15)
+    plt.xlabel("Local Sidereal Time (h)",fontsize=20)#20)
+    axs[0].errorbar(DataMidBins,1000*DataVRMSAvg,yerr=1000*DataVRMSStd,linestyle="",marker=".",color="#7565ad",zorder=2,label="Data")
+    axs[0].errorbar(SimMidBins,1000*SimVRMSAvg,yerr=1000*SimVRMSStd,linestyle="",marker="*",markersize=5,color="#d76caa",zorder=2,label="Simulation (scaled) mV")
+    VRMSRatio=DataVRMSAvg/SimVRMSAvg
+    VRMSRatioStd=VRMSRatio*np.sqrt((DataVRMSStd/DataVRMSAvg)**2 + (SimVRMSStd/SimVRMSAvg)**2)
+    axs[1].axhline(y = 1, color = 'k', linestyle = ':',alpha=1)
+    axs[1].errorbar(SimMidBins,VRMSRatio,yerr=1000*SimVRMSStd,linestyle="",marker=".",color="#8fb8e2",zorder=2,label="Data/Sim")
+    axs[0].legend(loc="lower left",fontsize=15)
+    plt.savefig("TransitCurveSt"+str(StNr)+"Ch" + str(ChNr)+".pdf", format="pdf", bbox_inches="tight")
+    return
+    
+def TransitCurveRatioSingular(StNr,ChNr1,ChNr2,DataSample,DataFileId1=0,DataFileId2=0,SimFileId1=0,SimFileId2=0):
+    """ Plots the ratio of the data transit curve or simulation transit curve results for ChNr1/ChNr2 from files stored away in the JobResults folder structure.
+    Parameters:
+    StNr= Station number.
+    ChNr1= Channel number for the VRMS value in the enumerator
+    ChNr2= Channel number for the VRMS value in the denominator
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    DataFileId= Name of the file where the data is stored.
+    SimFileId= Name of the file where the simulated results are stored.
+    """  
+    import numpy as np
+    import matplotlib.pyplot as plt
+        
+    #Import data 
+    if isinstance(DataFileId1, str) and isinstance(DataFileId2, str):
+        GroupedVRMS1=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId1) + ".npy",allow_pickle=True)
+        GroupedVRMS2=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId2) + ".npy",allow_pickle=True)
+        MidBins=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "MidBins_" + str(DataFileId1) + ".npy",allow_pickle=True)
+    #Import simulated results
+    elif isinstance(SimFileId1, str) and isinstance(SimFileId2, str):
+        SimEventRMS1=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "SimEventRMS_" + str(SimFileId1) + ".npy",allow_pickle=True)
+        SimEventTime1=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "SimEventTime_" + str(SimFileId1) + ".npy",allow_pickle=True)
+        SimEventRMS2=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "SimEventRMS_" + str(SimFileId2) + ".npy",allow_pickle=True)
+        SimEventTime2=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "SimEventTime_" + str(SimFileId2) + ".npy",allow_pickle=True)
+        
+        #Group simulated results
+        NBins=4*24
+        MidBins1, GroupedVRMS1 = GroupVRMS(SimEventRMS1,SimEventTime1,NBins)
+        MidBins2, GroupedVRMS2 = GroupVRMS(SimEventRMS2,SimEventTime2,NBins)
+        MidBins=MidBins1   
+    else:
+        print("No Filenames given")
+        return
+    if len(GroupedVRMS1) != len(GroupedVRMS2):
+        print("Error: Non matching Grouped VRMS length")
+            
+    #Count entries in each grouped dataset
+    Entries1=0
+    for i in range(len(GroupedVRMS1)):
+        Entries1+=len(GroupedVRMS1[i])
+    Entries2=0
+    for i in range(len(GroupedVRMS2)):
+        Entries2+=len(GroupedVRMS2[i])    
+
+    #Calculate statistics    
+    VRMSAvg1=np.array([np.mean(GroupedVRMS1[i]) if len(GroupedVRMS1[i])!=0 else 0 for i in range(len(GroupedVRMS1))])
+    VRMSStd1=np.array([np.std(GroupedVRMS1[i])/np.sqrt(len(GroupedVRMS1[i])) if len(GroupedVRMS1[i])!=0 else 0 for i in range(len(GroupedVRMS1))])
+    VRMSAvg2=np.array([np.mean(GroupedVRMS2[i]) if len(GroupedVRMS2[i])!=0 else 0 for i in range(len(GroupedVRMS2))])
+    VRMSStd2=np.array([np.std(GroupedVRMS2[i])/np.sqrt(len(GroupedVRMS2[i])) if len(GroupedVRMS2[i])!=0 else 0 for i in range(len(GroupedVRMS2))])
+    
+    #Calculate ratio & std
+    VRMSRatio=VRMSAvg1/VRMSAvg2
+    VRMSRatioStd=VRMSRatio*np.sqrt((VRMSStd1/VRMSAvg1)**2 + (VRMSStd2/VRMSAvg2)**2)
+        
+    plt.figure(figsize=(15,5))
+    plt.errorbar(MidBins,VRMSRatio,yerr=VRMSRatioStd,fmt=".",zorder=2,markersize=10)
+    plt.title("Transit curve ratio for St" + str(StNr) + "Ch" + str(ChNr1) + "/St" + str(StNr) + "Ch" + str(ChNr2),fontsize=25)
+    plt.figtext(0.2, 0.8, "Entries: " + str(Entries1) + "/" + str(Entries2), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))    
+    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    plt.ylabel("VRMS Ratio",fontsize=20)#20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.yticks(fontsize=25)#15)
+    plt.show()
+    return
+    
+def TransitCurveRatioComparison(StNr,ChNr1,ChNr2,DataSample,DataFileId1=0,DataFileId2=0,SimFileId1=0,SimFileId2=0):
+    """ Plots the ratios of the data and simulation transit curve results for ChNr1/ChNr2 from files stored away in the JobResults folder structure in order to compare the ratios.
+    Parameters:
+    StNr= Station number.
+    ChNr1= Channel number for the VRMS value in the enumerator
+    ChNr2= Channel number for the VRMS value in the denominator
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    DataFileId1= Name of the file where the data is stored for ChNr1.
+    DataFileId2= Name of the file where the data is stored for ChNr2.
+    SimFileId1= Name of the file where the simulated results are stored for ChNr1.
+    SimFileId2= Name of the file where the simulated results are stored for ChNr2.
+    """  
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import NuRadioReco.examples.cr_efficiency_analysis.helper_cr_eff as hcr
+    from NuRadioReco.utilities import units
+        
+    #Import data & simulation results
+    DataGroupedVRMS1=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId1) + ".npy",allow_pickle=True)
+    DataGroupedVRMS2=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "GroupedVRMS_" + str(DataFileId2) + ".npy",allow_pickle=True)
+    DataMidBins=np.load("JobResults/Data/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "MidBins_" + str(DataFileId1) + ".npy",allow_pickle=True)
+    SimEventRMS1=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "SimEventRMS_" + str(SimFileId1) + ".npy",allow_pickle=True)
+    SimEventTime1=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr1) + "/" + DataSample + "SimEventTime_" + str(SimFileId1) + ".npy",allow_pickle=True)
+    SimEventRMS2=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "SimEventRMS_" + str(SimFileId2) + ".npy",allow_pickle=True)
+    SimEventTime2=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr2) + "/" + DataSample + "SimEventTime_" + str(SimFileId2) + ".npy",allow_pickle=True)
+      
+    #Group simulated results
+    NBins=len(DataMidBins)
+    SimMidBins1, SimGroupedVRMS1 = GroupVRMS(SimEventRMS1,SimEventTime1,NBins)
+    SimMidBins2, SimGroupedVRMS2 = GroupVRMS(SimEventRMS2,SimEventTime2,NBins)
+    SimMidBins=SimMidBins1
+        
+    #Count amount of entries for each dataset and simulation result
+    SimEntries1=len(SimEventRMS1)
+    SimEntries2=len(SimEventRMS2)    
+    DataEntries1=0
+    for i in range(len(DataGroupedVRMS1)):
+        DataEntries1+=len(DataGroupedVRMS1[i])
+    DataEntries2=0
+    for i in range(len(DataGroupedVRMS2)):
+        DataEntries2+=len(DataGroupedVRMS2[i])  
+    
+    #Calculate data statistics
+    DataVRMSAvg1=np.array([np.mean(DataGroupedVRMS1[i]) if len(DataGroupedVRMS1[i])!=0 else 0 for i in range(len(DataGroupedVRMS1))])
+    DataVRMSStd1=np.array([np.std(DataGroupedVRMS1[i])/np.sqrt(len(DataGroupedVRMS1[i])) if len(DataGroupedVRMS1[i])!=0 else 0 for i in range(len(DataGroupedVRMS1))])
+    DataVRMSAvg2=np.array([np.mean(DataGroupedVRMS2[i]) if len(DataGroupedVRMS2[i])!=0 else 0 for i in range(len(DataGroupedVRMS2))])
+    DataVRMSStd2=np.array([np.std(DataGroupedVRMS2[i])/np.sqrt(len(DataGroupedVRMS2[i])) if len(DataGroupedVRMS2[i])!=0 else 0 for i in range(len(DataGroupedVRMS2))])
+
+    #Calculate data ratio & std
+    DataVRMSRatio=DataVRMSAvg1/DataVRMSAvg2
+    DataVRMSRatioStd=DataVRMSRatio*np.sqrt((DataVRMSStd1/DataVRMSAvg1)**2 + (DataVRMSStd2/DataVRMSAvg2)**2)
+        
+    #Calculate simulation statistics
+    SimVRMSAvg1=np.array([np.mean(SimGroupedVRMS1[i]) if len(SimGroupedVRMS1[i])!=0 else 0 for i in range(len(SimGroupedVRMS1))])
+    SimVRMSStd1=np.array([np.std(SimGroupedVRMS1[i])/np.sqrt(len(SimGroupedVRMS1[i])) if len(SimGroupedVRMS1[i])!=0 else 0 for i in range(len(SimGroupedVRMS1))])
+    SimVRMSAvg2=np.array([np.mean(SimGroupedVRMS2[i]) if len(SimGroupedVRMS2[i])!=0 else 0 for i in range(len(SimGroupedVRMS2))])
+    SimVRMSStd2=np.array([np.std(SimGroupedVRMS2[i])/np.sqrt(len(SimGroupedVRMS2[i])) if len(SimGroupedVRMS2[i])!=0 else 0 for i in range(len(SimGroupedVRMS2))])
+
+    #Set simulated transit curve onto the same average as the data and keep track of this offset
+    SimOffset1=np.mean(SimVRMSAvg1)-np.mean(DataVRMSAvg1)
+    SimVRMSAvg1-=SimOffset1
+    SimOffset2=np.mean(SimVRMSAvg2)-np.mean(DataVRMSAvg2)
+    SimVRMSAvg2-=SimOffset2        
+        
+    #Calculate simulated ratio and Data/Sim ratio
+    SimVRMSRatio=SimVRMSAvg1/SimVRMSAvg2
+    SimVRMSRatioStd=SimVRMSRatio*np.sqrt((SimVRMSStd1/SimVRMSAvg1)**2 + (SimVRMSStd2/SimVRMSAvg2)**2)   
+    VRMSRatio=DataVRMSRatio/SimVRMSRatio
+    VRMSRatioStd=VRMSRatio*np.sqrt((DataVRMSRatioStd/DataVRMSRatio)**2 + (SimVRMSRatioStd/SimVRMSRatio)**2)
+        
+    fig, axs = plt.subplots(2,1,figsize=(15,7.5), gridspec_kw={'height_ratios': [2, 1]})
+    fig.suptitle("Transit curve ratio for St" + str(StNr) + "Ch" + str(ChNr1) + "/St" + str(StNr) + "Ch" + str(ChNr2),x=0.5,y=0.94,fontsize=25)
+    plt.subplots_adjust(hspace=0)
+    for ax in axs:
+        ax.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        ax.set_xticks(np.arange(0, 24, 1.0))
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(20)
+    axs[0].set_ylabel("V_RMS ratio",fontsize=20)
+    axs[1].set_ylabel("Data/Sim",fontsize=20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    axs[0].errorbar(DataMidBins,DataVRMSRatio,yerr=DataVRMSRatioStd,fmt=".",zorder=2,label="Data")#,markersize=15)
+    axs[0].errorbar(SimMidBins,SimVRMSRatio,yerr=SimVRMSRatioStd,fmt=".",zorder=2,label="Simulation")# +str(np.round(1000*SimOffset,3)) + "mV")
+    axs[1].axhline(y = 1, color = 'k', linestyle = ':',alpha=1)
+    axs[1].errorbar(SimMidBins,VRMSRatio,yerr=VRMSRatioStd,fmt=".",zorder=2)# ,label="Simulation -" +str(np.round(1000*SimOffset,3)) + "mV",markersize=15)
+    axs[0].legend(loc="lower left",fontsize=15)  
+    return
+    
+def GroupVRMS(EventVRMS,EventTime,NBins):
+    """Groupes a list of VRMS values and EventTimes into NBins bins.
+    Parameters:
+    EventVRMS= List of VRMS values that need to be grouped 
+    EventTime= List of the respective Event times corresponding to the values in EventVRMS
+    NBins= Amount of bins to group the values in.
+    """
+    EventTimeCounts, EventTimeBins=np.histogram(EventTime, bins=NBins,range=(0,24),density=False) #Storing timestamps in histogram format
+    EventTimeDig=np.digitize(EventTime,EventTimeBins)
+    GroupedVRMS=np.empty((NBins,),dtype=object)
+    for i in range(len(EventTimeDig)):
+        GroupedVRMS[EventTimeDig[i]-1]=np.append(GroupedVRMS[EventTimeDig[i]-1],EventVRMS[i])
+        
+    ##Get rid of "None" entries in beginning of array
+    for i in range(len(GroupedVRMS)):
+        GroupedVRMS[i]=np.delete(GroupedVRMS[i], 0) 
+    MidBins= np.array([(EventTimeBins[i] + EventTimeBins[i+1])/2 for i in range(0,len(EventTimeBins)-1)]) 
+        
+    return MidBins, GroupedVRMS
+
+def GNSimError(StNr,ChNr,DataSample,SimFileIdMin, SimFileIdZero,SimFileIdPlus,NBins=4*24,Plot=False):
+    """ Plots the simulated transit curves to compare the impact of moving the radio skymap temperatures 1 standard deviation up or down. 
+    Parameters:
+    StNr= Station number.
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    SimFileIdMin= Name of the file where the simulated results are stored for the radioskymap -1 standard deviation.
+    SimFileIdZero= Name of the file where the simulated results are stored for the standard radioskymap.
+    SimFileIdPlus= Name of the file where the simulated results are stored for the radioskymap +1 standard deviation.
+    NBins= Amount of bins to group the values in.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import NuRadioReco.examples.cr_efficiency_analysis.helper_cr_eff as hcr
+    from NuRadioReco.utilities import units
+        
+    #Import simulation results
+    SimEventRMSMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdMin) + ".npy",allow_pickle=True)
+    SimEventTimeMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdMin) + ".npy",allow_pickle=True)
+      
+    SimEventRMSZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdZero) + ".npy",allow_pickle=True)
+    SimEventTimeZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdZero) + ".npy",allow_pickle=True)
+
+    SimEventRMSPlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdPlus) + ".npy",allow_pickle=True)
+    SimEventTimePlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdPlus) + ".npy",allow_pickle=True)
+        
+    #Group simulation results
+    MidBinsMin, GroupedVRMSMin = GroupVRMS(SimEventRMSMin,SimEventTimeMin,NBins)
+    MidBinsZero, GroupedVRMSZero = GroupVRMS(SimEventRMSZero,SimEventTimeZero,NBins)
+    MidBinsPlus, GroupedVRMSPlus = GroupVRMS(SimEventRMSPlus,SimEventTimePlus,NBins)
+       
+    #Calculate statistics
+    SimVRMSAvgMin=np.array([np.mean(GroupedVRMSMin[i]) if len(GroupedVRMSMin[i])!=0 else 0 for i in range(len(GroupedVRMSMin))])
+    SimVRMSStdMin=np.array([np.std(GroupedVRMSMin[i])/np.sqrt(len(GroupedVRMSMin[i])) if len(GroupedVRMSMin[i])!=0 else 0 for i in range(len(GroupedVRMSMin))])
+    SimVRMSAvgZero=np.array([np.mean(GroupedVRMSZero[i]) if len(GroupedVRMSZero[i])!=0 else 0 for i in range(len(GroupedVRMSZero))])
+    SimVRMSStdZero=np.array([np.std(GroupedVRMSZero[i])/np.sqrt(len(GroupedVRMSZero[i])) if len(GroupedVRMSZero[i])!=0 else 0 for i in range(len(GroupedVRMSZero))])
+    SimVRMSAvgPlus=np.array([np.mean(GroupedVRMSPlus[i]) if len(GroupedVRMSPlus[i])!=0 else 0 for i in range(len(GroupedVRMSPlus))])
+    SimVRMSStdPlus=np.array([np.std(GroupedVRMSPlus[i])/np.sqrt(len(GroupedVRMSPlus[i])) if len(GroupedVRMSPlus[i])!=0 else 0 for i in range(len(GroupedVRMSPlus))])
+
+    #GN simulation error calculation
+    GNUpperError,GNLowerError=SimVRMSAvgPlus-SimVRMSAvgZero,SimVRMSAvgZero-SimVRMSAvgMin
+    GNSimError=np.array([GNLowerError,GNUpperError])
+    
+    if Plot:
+        AvgError=np.array([np.mean([GNUpperError[i],GNLowerError[i]]) for i in range(len(GNLowerError))])
+        AvgRelError=np.mean(AvgError/SimVRMSAvgZero)
         plt.figure(figsize=(15,5))
-        plt.figtext(0.2, 0.8, "Simulations:" + str(len(SimEventRMS)), fontsize=18,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
-        #plt.hist(RMSBins, bins=24,range=(0,24),density=False, weights=[EventRMS[i]/EventRMSCounts[i] for i in range(len(EventRMS))])
-        plt.errorbar(MidBins,1000*VRMSAvg,yerr=1000*VRMSStd,fmt=".",zorder=2)
-        #for i in range(len(GroupedVRMS)):
-        #    plt.plot(MidBins[i]*np.ones(len(GroupedVRMS[i])),1000*GroupedVRMS[i],"r.", alpha=0.5,zorder=1)
-        #plt.plot(SimEventTime,1000*SimEventRMS,"r.", alpha=0.5,zorder=1)
-        #plt.plot(MidBins,1000*VRMSAvg,'r.')
+        plt.figtext(0.6, 0.2, "AvgError:" + str(np.round(np.mean(10**6*AvgError),2)) + "µV; AvgRelError:" + str(np.round(100*AvgRelError,2)) + "%", fontsize=16,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+        plt.errorbar(MidBinsPlus,1000*SimVRMSAvgPlus,yerr=1000*SimVRMSStdPlus,fmt=".",zorder=2,label="Simulation +1 sigma")#,markersize=15)
+        plt.errorbar(MidBinsZero,1000*SimVRMSAvgZero,yerr=1000*SimVRMSStdZero,fmt=".",zorder=2,label="Simulation ")#,markersize=15)
+        plt.errorbar(MidBinsMin,1000*SimVRMSAvgMin,yerr=1000*SimVRMSStdMin,fmt=".",zorder=2,label="Simulation -1 sigma")#,markersize=15)
         plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
-        plt.title("Simulation of Galactic noise for station " + str(StNr) + ", channel " + str(ChNr), fontsize=25)
-        #plt.ylim(-50,50)
-        #plt.xlim(0,np.max(SamplingTimes*(10**9)))
+        plt.title("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
         plt.xlabel("LST Time (hrs)",fontsize=20)#20)
         plt.ylabel("V_RMS (mV)",fontsize=20)#20)
         plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
         plt.yticks(fontsize=25)#15)
-        #plt.legend()
+        plt.legend(loc="lower left",fontsize=15)
         plt.show()
+    return GNSimError
+    
+def PlotErrors(GNSimError,StNr,ChNr):
+    """ Plots the errors on the transit curve induced by moving the radioskymap 1 standard deviation up or down.
+    Parameters:
+    GNSimError= List of the upper and lower errors on the transit curves. 
+    StNr= Station number.
+    ChNr= Channel number.
+    NBins= Amount of bins to group the values in.
+    """
+    NBins=len(GNSimError[0])
+    Stepsize=24.0/NBins
+    MidBins=np.arange(0,24,Stepsize) + Stepsize/2
+
+    plt.figure(figsize=(15,5))
+    plt.plot(MidBins,1000*GNSimError[0],'r.',label="Lower error")
+    plt.plot(MidBins,1000*GNSimError[1],'b.', label="Upper error")
+    plt.plot(MidBins,1000*np.mean(GNSimError[0])*np.ones(len(MidBins)),'r-.')
+    plt.plot(MidBins,1000*np.mean(GNSimError[1])*np.ones(len(MidBins)),'b-.')
+    plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+    plt.title("GN errors for Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+    plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+    plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+    plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+    plt.yticks(fontsize=25)#15)
+    plt.legend(loc="lower left",fontsize=15)
+    plt.show()    
+    return
+
+def TNSimFrac(StNr,ChNr,DataSample,SimFileIdMin, SimFileIdZero,SimFileIdPlus,NBins=4*24,Plot=False):
+    """ Plots the fraction of the simulated transit curves where the thermal noise temperature has been moved up and down by 1 standard deviation in order to check for a change in the transit curve form.
+    Parameters:
+    StNr= Station number
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    SimFileIdMin= Name of the file where the simulated results are stored for the thermal noise temperature -1 standard deviation.
+    SimFileIdZero= Name of the file where the simulated results are stored for the standard thermal noise temperature.
+    SimFileIdPlus= Name of the file where the simulated results are stored for the thermal noise temperature +1 standard deviation.
+    NBins= Amount of bins to group the values in.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import NuRadioReco.examples.cr_efficiency_analysis.helper_cr_eff as hcr
+    from NuRadioReco.utilities import units
+        
+    #Import simulation results
+    SimEventRMSMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdMin) + ".npy",allow_pickle=True)
+    SimEventTimeMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdMin) + ".npy",allow_pickle=True)
+      
+    SimEventRMSZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdZero) + ".npy",allow_pickle=True)
+    SimEventTimeZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdZero) + ".npy",allow_pickle=True)
+
+    SimEventRMSPlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(SimFileIdPlus) + ".npy",allow_pickle=True)
+    SimEventTimePlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(SimFileIdPlus) + ".npy",allow_pickle=True)
+    
+    #Group simulation results
+    MidBinsMin, GroupedVRMSMin = GroupVRMS(SimEventRMSMin,SimEventTimeMin,NBins)
+    MidBinsZero, GroupedVRMSZero = GroupVRMS(SimEventRMSZero,SimEventTimeZero,NBins)
+    MidBinsPlus, GroupedVRMSPlus = GroupVRMS(SimEventRMSPlus,SimEventTimePlus,NBins)
+        
+    #Calculate statistics
+    SimVRMSAvgMin=np.array([np.mean(GroupedVRMSMin[i]) if len(GroupedVRMSMin[i])!=0 else 0 for i in range(len(GroupedVRMSMin))])
+    SimVRMSStdMin=np.array([np.std(GroupedVRMSMin[i])/np.sqrt(len(GroupedVRMSMin[i])) if len(GroupedVRMSMin[i])!=0 else 0 for i in range(len(GroupedVRMSMin))])
+    SimVRMSAvgZero=np.array([np.mean(GroupedVRMSZero[i]) if len(GroupedVRMSZero[i])!=0 else 0 for i in range(len(GroupedVRMSZero))])
+    SimVRMSStdZero=np.array([np.std(GroupedVRMSZero[i])/np.sqrt(len(GroupedVRMSZero[i])) if len(GroupedVRMSZero[i])!=0 else 0 for i in range(len(GroupedVRMSZero))])
+    SimVRMSAvgPlus=np.array([np.mean(GroupedVRMSPlus[i]) if len(GroupedVRMSPlus[i])!=0 else 0 for i in range(len(GroupedVRMSPlus))])
+    SimVRMSStdPlus=np.array([np.std(GroupedVRMSPlus[i])/np.sqrt(len(GroupedVRMSPlus[i])) if len(GroupedVRMSPlus[i])!=0 else 0 for i in range(len(GroupedVRMSPlus))])
+
+    #TN simulation error calculation
+    GNUpperError,GNLowerError=SimVRMSAvgPlus-SimVRMSAvgZero,SimVRMSAvgZero-SimVRMSAvgMin
+    GNSimError=np.array([GNLowerError,GNUpperError])
+    
+    if Plot:
+        AvgError=np.array([np.mean([GNUpperError[i],GNLowerError[i]]) for i in range(len(GNLowerError))])
+        AvgRelError=np.mean(AvgError/SimVRMSAvgZero)
+        plt.figure(figsize=(15,5))
+        plt.figtext(0.6, 0.2, "AvgError:" + str(np.round(np.mean(10**6*AvgError),2)) + "µV; AvgRelError:" + str(np.round(100*AvgRelError,2)) + "%", fontsize=16,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+        plt.errorbar(MidBinsPlus,1000*SimVRMSAvgPlus,yerr=1000*SimVRMSStdPlus,fmt=".",zorder=2,label="Simulation +1sigma")#,markersize=15)
+        plt.errorbar(MidBinsZero,1000*SimVRMSAvgZero,yerr=1000*SimVRMSStdZero,fmt=".",zorder=2,label="Simulation ")#,markersize=15)
+        plt.errorbar(MidBinsMin,1000*SimVRMSAvgMin,yerr=1000*SimVRMSStdMin,fmt=".",zorder=2,label="Simulation -1 sigma")#,markersize=15)
+        plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        plt.title("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+        plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+        plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+        plt.yticks(fontsize=25)#15)
+        plt.legend(loc="lower left",fontsize=15)
+        plt.show()
+            
+        VRMSRatioUp=SimVRMSAvgPlus/SimVRMSAvgZero
+        VRMSRatioUpStd=VRMSRatioUp*np.sqrt((SimVRMSStdPlus/SimVRMSAvgPlus)**2 + (SimVRMSStdZero/SimVRMSAvgZero)**2)
+        VRMSRatioDown=SimVRMSAvgZero/SimVRMSAvgMin
+        VRMSRatioDownStd=VRMSRatioDown*np.sqrt((SimVRMSStdZero/SimVRMSAvgZero)**2 + (SimVRMSStdMin/SimVRMSAvgMin)**2)            
+        plt.figure(figsize=(15,5))
+        plt.errorbar(MidBinsPlus,VRMSRatioUp,yerr=VRMSRatioUpStd,fmt=".",zorder=2,label="300K/275K")#,markersize=15)
+        plt.errorbar(MidBinsZero,VRMSRatioDown,yerr=VRMSRatioDownStd,fmt=".",zorder=2,label="275K/250K ")#,markersize=15)
+        plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        plt.title("Transit curve fraction for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+        plt.ylabel("Sim fraction",fontsize=20)#20)
+        plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+        plt.yticks(fontsize=25)#15)
+        plt.legend(loc="lower left",fontsize=15)
+        plt.show()
+    return GNSimError
+    
+def SimSysError(StNr,ChNr,DataSample,GNSimFileIdMin, GNSimFileIdZero,GNSimFileIdPlus,TNSimFileIdMin, TNSimFileIdZero, TNSimFileIdPlus,NBins=4*24,Plot=False):
+    """ Computes the propagated systematic noise error on the thermal noise and the galactic noise and subsequently combines them.
+    Parameters:
+    StNr= Station number
+    ChNr= Channel number
+    DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
+    GNSimFileIdMin= Name of the file where the simulated results are stored for the radioskymap -1 standard deviation.
+    GNSimFileIdZero= Name of the file where the simulated results are stored for the standard radioskymap.
+    GNSimFileIdPlus= Name of the file where the simulated results are stored for the radioskymap +1 standard deviation.
+    TNSimFileIdMin= Name of the file where the simulated results are stored for the thermal noise temperature -1 standard deviation.
+    TNSimFileIdZero= Name of the file where the simulated results are stored for the standard thermal noise temperature.
+    TNSimFileIdPlus= Name of the file where the simulated results are stored for the thermal noise temperature +1 standard deviation.
+    NBins= Amount of bins to group the values in.
+    """
+    import NuRadioReco.examples.cr_efficiency_analysis.helper_cr_eff as hcr
+    from NuRadioReco.utilities import units
+       
+    #Take the upwards facing or downwards facing LPDA corresponding to ChNr. (assumed thermal noise simulation to o,ly differ for upwards & downwards facing LPDAs)
+    if ChNr in [13,16,19]:
+            TNChNr=19
+    elif ChNr in [14,17,20]:
+            TNChNr=20
+    else:
+        print("Channel number not in list for this study")
+        return
+        
+    #Import simulation results
+    TNSimEventRMSMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventRMS_" + str(TNSimFileIdMin) + ".npy",allow_pickle=True)
+    TNSimEventTimeMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventTime_" + str(TNSimFileIdMin) + ".npy",allow_pickle=True)
+      
+    TNSimEventRMSZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventRMS_" + str(TNSimFileIdZero) + ".npy",allow_pickle=True)
+    TNSimEventTimeZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventTime_" + str(TNSimFileIdZero) + ".npy",allow_pickle=True)
+
+    TNSimEventRMSPlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventRMS_" + str(TNSimFileIdPlus) + ".npy",allow_pickle=True)
+    TNSimEventTimePlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(TNChNr) + "/" + DataSample + "SimEventTime_" + str(TNSimFileIdPlus) + ".npy",allow_pickle=True)
+
+    GNSimEventRMSMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(GNSimFileIdMin) + ".npy",allow_pickle=True)
+    GNSimEventTimeMin=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(GNSimFileIdMin) + ".npy",allow_pickle=True)
+      
+    GNSimEventRMSZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(GNSimFileIdZero) + ".npy",allow_pickle=True)
+    GNSimEventTimeZero=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(GNSimFileIdZero) + ".npy",allow_pickle=True)
+
+    GNSimEventRMSPlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventRMS_" + str(GNSimFileIdPlus) + ".npy",allow_pickle=True)
+    GNSimEventTimePlus=np.load("JobResults/Sim/St" + str(StNr) + "Ch" + str(ChNr) + "/" + DataSample + "SimEventTime_" + str(GNSimFileIdPlus) + ".npy",allow_pickle=True)
+       
+    #Group TN simulation results
+    TNMidBinsMin, TNGroupedVRMSMin = GroupVRMS(TNSimEventRMSMin,TNSimEventTimeMin,NBins)
+    TNMidBinsZero, TNGroupedVRMSZero = GroupVRMS(TNSimEventRMSZero,TNSimEventTimeZero,NBins)
+    TNMidBinsPlus, TNGroupedVRMSPlus = GroupVRMS(TNSimEventRMSPlus,TNSimEventTimePlus,NBins)
+        
+    #Compute statistics
+    TNSimVRMSAvgMin=np.array([np.mean(TNGroupedVRMSMin[i]) if len(TNGroupedVRMSMin[i])!=0 else 0 for i in range(len(TNGroupedVRMSMin))])
+    TNSimVRMSStdMin=np.array([np.std(TNGroupedVRMSMin[i])/np.sqrt(len(TNGroupedVRMSMin[i])) if len(TNGroupedVRMSMin[i])!=0 else 0 for i in range(len(TNGroupedVRMSMin))])
+    TNSimVRMSAvgZero=np.array([np.mean(TNGroupedVRMSZero[i]) if len(TNGroupedVRMSZero[i])!=0 else 0 for i in range(len(TNGroupedVRMSZero))])
+    TNSimVRMSStdZero=np.array([np.std(TNGroupedVRMSZero[i])/np.sqrt(len(TNGroupedVRMSZero[i])) if len(TNGroupedVRMSZero[i])!=0 else 0 for i in range(len(TNGroupedVRMSZero))])
+    TNSimVRMSAvgPlus=np.array([np.mean(TNGroupedVRMSPlus[i]) if len(TNGroupedVRMSPlus[i])!=0 else 0 for i in range(len(TNGroupedVRMSPlus))])
+    TNSimVRMSStdPlus=np.array([np.std(TNGroupedVRMSPlus[i])/np.sqrt(len(TNGroupedVRMSPlus[i])) if len(TNGroupedVRMSPlus[i])!=0 else 0 for i in range(len(TNGroupedVRMSPlus))])
+
+    #TN Error calculation simulation
+    TNUpperError,TNLowerError=TNSimVRMSAvgPlus-TNSimVRMSAvgZero,TNSimVRMSAvgZero-TNSimVRMSAvgMin
+    TNSimErrorAvg=np.mean([TNLowerError,TNUpperError],0)
+        
+    #Group GN simulation results
+    GNMidBinsMin, GNGroupedVRMSMin = GroupVRMS(GNSimEventRMSMin,GNSimEventTimeMin,NBins)
+    GNMidBinsZero, GNGroupedVRMSZero = GroupVRMS(GNSimEventRMSZero,GNSimEventTimeZero,NBins)
+    GNMidBinsPlus, GNGroupedVRMSPlus = GroupVRMS(GNSimEventRMSPlus,GNSimEventTimePlus,NBins)
+      
+    #Compute statistics
+    GNSimVRMSAvgMin=np.array([np.mean(GNGroupedVRMSMin[i]) if len(GNGroupedVRMSMin[i])!=0 else 0 for i in range(len(GNGroupedVRMSMin))])
+    GNSimVRMSStdMin=np.array([np.std(GNGroupedVRMSMin[i])/np.sqrt(len(GNGroupedVRMSMin[i])) if len(GNGroupedVRMSMin[i])!=0 else 0 for i in range(len(GNGroupedVRMSMin))])
+    GNSimVRMSAvgZero=np.array([np.mean(GNGroupedVRMSZero[i]) if len(GNGroupedVRMSZero[i])!=0 else 0 for i in range(len(GNGroupedVRMSZero))])
+    GNSimVRMSStdZero=np.array([np.std(GNGroupedVRMSZero[i])/np.sqrt(len(GNGroupedVRMSZero[i])) if len(GNGroupedVRMSZero[i])!=0 else 0 for i in range(len(GNGroupedVRMSZero))])
+    GNSimVRMSAvgPlus=np.array([np.mean(GNGroupedVRMSPlus[i]) if len(GNGroupedVRMSPlus[i])!=0 else 0 for i in range(len(GNGroupedVRMSPlus))])
+    GNSimVRMSStdPlus=np.array([np.std(GNGroupedVRMSPlus[i])/np.sqrt(len(GNGroupedVRMSPlus[i])) if len(GNGroupedVRMSPlus[i])!=0 else 0 for i in range(len(GNGroupedVRMSPlus))])
+
+    #GN simulation error calculation 
+    GNUpperError,GNLowerError=GNSimVRMSAvgPlus-GNSimVRMSAvgZero,GNSimVRMSAvgZero-GNSimVRMSAvgMin
+    GNSimErrorAvg=np.mean([GNLowerError,GNUpperError],0)
+    
+    #Print results
+    PrintTN=np.round(10**6*np.mean(TNSimErrorAvg),2)
+    PrintGN=np.round(10**6*np.mean(GNSimErrorAvg),2)
+    PrintTot=np.round(10**6*np.sqrt(np.mean(TNSimErrorAvg)**2 + np.mean(GNSimErrorAvg)**2),2)
+    print("Station",StNr,", Channel",ChNr,":",PrintTN,"µV TN +",PrintGN,"µV GN =>",PrintTot,"µV Tot")
+    
+    if Plot:
+        AvgError=np.array([np.mean([GNUpperError[i],GNLowerError[i]]) for i in range(len(GNLowerError))])
+        AvgRelError=np.mean(AvgError/SimVRMSAvgZero)
+        plt.figure(figsize=(15,5))
+        plt.figtext(0.6, 0.2, "AvgError:" + str(np.round(np.mean(10**6*AvgError),2)) + "µV; AvgRelError:" + str(np.round(100*AvgRelError,2)) + "%", fontsize=16,bbox=dict(edgecolor='black', facecolor='none', alpha=0.2, pad=10.0))
+        plt.errorbar(MidBinsPlus,1000*SimVRMSAvgPlus,yerr=1000*SimVRMSStdPlus,fmt=".",zorder=2,label="Simulation +1sigma")#,markersize=15)
+        plt.errorbar(MidBinsZero,1000*SimVRMSAvgZero,yerr=1000*SimVRMSStdZero,fmt=".",zorder=2,label="Simulation ")#,markersize=15)
+        plt.errorbar(MidBinsMin,1000*SimVRMSAvgMin,yerr=1000*SimVRMSStdMin,fmt=".",zorder=2,label="Simulation -1 sigma")#,markersize=15)
+        plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        plt.title("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+        plt.ylabel("V_RMS (mV)",fontsize=20)#20)
+        plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+        plt.yticks(fontsize=25)#15)
+        plt.legend(loc="lower left",fontsize=15)
+        plt.show()
+            
+        VRMSRatioUp=SimVRMSAvgPlus/SimVRMSAvgZero
+        VRMSRatioUpStd=VRMSRatioUp*np.sqrt((SimVRMSStdPlus/SimVRMSAvgPlus)**2 + (SimVRMSStdZero/SimVRMSAvgZero)**2)
+        VRMSRatioDown=SimVRMSAvgZero/SimVRMSAvgMin
+        VRMSRatioDownStd=VRMSRatioDown*np.sqrt((SimVRMSStdZero/SimVRMSAvgZero)**2 + (SimVRMSStdMin/SimVRMSAvgMin)**2)            
+        plt.figure(figsize=(15,5))
+        plt.errorbar(MidBinsPlus,VRMSRatioUp,yerr=VRMSRatioUpStd,fmt=".",zorder=2,label="300K/275K")#,markersize=15)
+        plt.errorbar(MidBinsZero,VRMSRatioDown,yerr=VRMSRatioDownStd,fmt=".",zorder=2,label="275K/250K ")#,markersize=15)
+        plt.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
+        plt.title("Transit curve fraction for station " + str(StNr) + ", antenna " + str(ChNr),fontsize=25)
+        plt.xlabel("LST Time (hrs)",fontsize=20)#20)
+        plt.ylabel("Sim fraction",fontsize=20)#20)
+        plt.xticks(np.arange(0, 24, 1.0),fontsize=25)#15)
+        plt.yticks(fontsize=25)#15)
+        plt.legend(loc="lower left",fontsize=15)
+        plt.show()
+    return
