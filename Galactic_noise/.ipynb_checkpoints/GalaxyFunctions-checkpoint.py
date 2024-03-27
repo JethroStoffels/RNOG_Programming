@@ -95,7 +95,7 @@ def TransitCurve(StNr,ChNr,Runs,NBins=4*24,ZeroAvg=True,TimeFormat="LST",Trigger
                         FilteredRuns=np.delete(FilteredRuns, RunIdx)
                         FilteredEvNrs=np.delete(FilteredEvNrs, RunIdx)
                     continue
-                VoltageTrace=ADCtoVoltage(RadiantData[0][ChNr]) #Convert timetrace data from ADC to voltage
+                VoltageTrace=ADCtoVoltage(RadiantData[0][ChNr]) #Convert timetrace data from ADC to voltage (index on 0 since only one event is read in from WaveFormsFile)
                 if ZeroAvg==True: #Zero average the timetrace 
                     Vmean=np.mean(VoltageTrace)
                     VoltageTrace-=Vmean
@@ -741,8 +741,9 @@ def TransitCurveComparison(StNr,ChNr,DataSample, DataFileId,SimFileId):
     axs[1].errorbar(SimMidBins,VRMSRatio,yerr=1000*SimVRMSStd,fmt=".",zorder=2,label="Simulation " + OffsetStr + "mV")#,markersize=15)
     axs[0].legend(loc="lower left",fontsize=15)
     return
-    
-def TransitCurveComparisonCleanPlot(StNr,ChNr,DataSample, DataFileId,SimFileId):
+
+
+def TransitCurveComparisonCleanPlot(StNr,ChNr,DataSample, DataFileId,SimFileId,Scaling="Int"):
     """ Plots the data and simulation transit curve results from files stored away in the JobResults folder structure. Clean version for the paper.
     Parameters:
     StNr= Station number.
@@ -750,7 +751,8 @@ def TransitCurveComparisonCleanPlot(StNr,ChNr,DataSample, DataFileId,SimFileId):
     DataSample= String that can be "C" for combined, "HC" for handcarry or "S" for Satellite 
     DataFileId= Name of the file where the data is stored.
     SimFileId= Name of the file where the simulated results are stored.
-    """
+    Scaling= "Int" for scaling by integrated transit curve, "pdf" to make both a pdf & "Avg" by matching baselines
+     """
     import numpy as np
     import matplotlib.pyplot as plt
         
@@ -777,33 +779,80 @@ def TransitCurveComparisonCleanPlot(StNr,ChNr,DataSample, DataFileId,SimFileId):
     for i in range(len(DataGroupedVRMS)):
         DataEntries+=len(DataGroupedVRMS[i])
             
-    #Set simulated transit curve onto the same average as the data and keep track of this offset
-    SimOffset=np.mean(SimVRMSAvg)-np.mean(DataVRMSAvg)
-    SimVRMSAvg-=SimOffset
-
-    if SimOffset>0:
-        OffsetStr="-" + str(np.round(1000*SimOffset,3))
-    else:
-        OffsetStr= "+" + str(np.abs(np.round(1000*SimOffset,3)))
+    RatioyLabel="Data/Sim"
+    if Scaling=="Avg":
+        #Set simulated transit curve onto the same average as the data and keep track of this offset
+        SimOffset=np.mean(SimVRMSAvg)-np.mean(DataVRMSAvg)
+        SimVRMSAvg-=SimOffset            
+        SimLabel="Simulation " + ("+" if SimOffset>0 else "-") + str(np.round(1e3*np.abs(SimOffset),3)) + " mV"
+        ylabel="Vrms (mV)"
+        
+        SimAmplitude=(np.max(SimVRMSAvg)-np.min(SimVRMSAvg))/2
+        SimAmplitudeStd=np.sqrt((DataVRMSStd[np.where(DataVRMSStd==np.max(DataVRMSStd))[0][0]])**2 + (SimVRMSStd[np.where(SimVRMSStd==np.max(SimVRMSStd))[0][0]])**2)/2
+        VRMSRatio=(DataVRMSAvg-SimVRMSAvg)/SimAmplitude
+        VRMSRatioStd=(1/SimAmplitude)*np.sqrt((DataVRMSStd)**2 + (SimVRMSStd)**2 + (SimAmplitudeStd*VRMSRatio)**2)
+        RatioyLabel="(Data-Sim)/$\mathbf{A_{Sim}}$"
+        ylineval=0
+    elif Scaling=="pdf":
+        #Transform transit curves into pdf
+        dt=DataMidBins[1]-DataMidBins[0]
+        DataVRMSStd, SimVRMSStd=DataVRMSStd/(dt*np.sum(DataVRMSAvg)),SimVRMSStd/(dt*np.sum(SimVRMSAvg))
+        DataVRMSAvg, SimVRMSAvg=DataVRMSAvg/(dt*np.sum(DataVRMSAvg)),SimVRMSAvg/(dt*np.sum(SimVRMSAvg))
+        VRMSRatio=DataVRMSAvg/SimVRMSAvg
+        VRMSRatioStd=(VRMSRatio)*np.sqrt((DataVRMSStd/DataVRMSAvg)**2 + (SimVRMSStd/SimVRMSAvg)**2)
+        SimLabel="Simulation"
+        ylabel="pdf"
+        ylineval=1
+    elif Scaling=="Int":
+        dt=DataMidBins[1]-DataMidBins[0]
+        IData,ISim=dt*np.sum(DataVRMSAvg),dt*np.sum(SimVRMSAvg)
+        SimVRMSStd=SimVRMSStd*(IData/ISim)
+        SimVRMSAvg=SimVRMSAvg*(IData/ISim)
+        VRMSRatio=DataVRMSAvg/SimVRMSAvg
+        VRMSRatioStd=(VRMSRatio)*np.sqrt((DataVRMSStd/DataVRMSAvg)**2 + (SimVRMSStd/SimVRMSAvg)**2)
+        ylineval=1
+        SimLabel="Simulation (scaled by " + str(np.round(IData/ISim,2)) + ")"
+        ylabel="Vrms (mV)"
+        
     fig, axs = plt.subplots(2,1,figsize=(15,7.5), gridspec_kw={'height_ratios': [2, 1]})
+    fig.suptitle("Transit curve for station " + str(StNr) + ", antenna " + str(ChNr),x=0.5,y=0.94,fontsize=25,weight="bold")
     plt.subplots_adjust(hspace=0)
     for ax in axs:
         ax.grid(color='grey', linestyle='-', linewidth=1,alpha=0.5)
         ax.set_xticks(np.arange(0, 25, 2.0))
+        #ax.set_yticks(ax.get_yticks,labels=ax.get_yticklabels(),weight='bold')
         for tick in ax.yaxis.get_major_ticks():
             tick.label.set_fontsize(20)
-    axs[0].set_ylabel(r"V$_{RMS}$ (mV)",fontsize=20)
-    axs[1].set_ylabel("Data/Sim",fontsize=20)
-    plt.xticks(np.arange(0, 25, 2.0),fontsize=25)#15)
-    plt.xlabel("Local Sidereal Time (h)",fontsize=20)#20)
-    axs[0].errorbar(DataMidBins,1000*DataVRMSAvg,yerr=1000*DataVRMSStd,linestyle="",marker=".",color="#7565ad",zorder=2,label="Data")
-    axs[0].errorbar(SimMidBins,1000*SimVRMSAvg,yerr=1000*SimVRMSStd,linestyle="",marker="*",markersize=5,color="#d76caa",zorder=2,label="Simulation (scaled) mV")
-    VRMSRatio=DataVRMSAvg/SimVRMSAvg
-    VRMSRatioStd=VRMSRatio*np.sqrt((DataVRMSStd/DataVRMSAvg)**2 + (SimVRMSStd/SimVRMSAvg)**2)
-    axs[1].axhline(y = 1, color = 'k', linestyle = ':',alpha=1)
-    axs[1].errorbar(SimMidBins,VRMSRatio,yerr=1000*SimVRMSStd,linestyle="",marker=".",color="#8fb8e2",zorder=2,label="Data/Sim")
-    axs[0].legend(loc="lower left",fontsize=15)
-    plt.savefig("TransitCurveSt"+str(StNr)+"Ch" + str(ChNr)+".pdf", format="pdf", bbox_inches="tight")
+            plt.yticks(fontsize=25,weight="bold")
+    #axs[0].set_ylabel(r"$V_{\mathbf{Std}}$ (mV)",fontsize=20,weight="bold")
+    axs[0].set_ylabel(ylabel,fontsize=20,weight="bold")
+    axs[1].set_ylabel(RatioyLabel,fontsize=20,weight="bold")
+    plt.xticks(np.arange(0, 25, 2.0),fontsize=25,weight="bold")#15)
+    
+    plt.axes(axs[0])
+    plt.yticks(fontsize=25,weight="bold")
+    plt.axes(axs[1])
+    
+    plt.yticks(fontsize=25,weight="bold")
+    plt.xlabel("Local Sidereal Time (h)",fontsize=20,weight="bold")#20)
+    # axs[0].errorbar(DataMidBins,1000*DataVRMSAvg,yerr=1000*DataVRMSStd,linestyle="",marker=".",color="#7565ad",zorder=2,label="Data")
+    # axs[0].errorbar(SimMidBins,1000*SimVRMSAvg,yerr=1000*SimVRMSStd,linestyle="",marker="x",markersize=5,color="#d76caa",zorder=2,label="Simulation  mV")
+    axs[0].errorbar(DataMidBins,1e3*DataVRMSAvg,yerr=1e3*DataVRMSStd,linestyle="",marker=".",color="#7565ad",zorder=2,label="Data")
+    axs[0].errorbar(SimMidBins,1e3*SimVRMSAvg,yerr=1e3*SimVRMSStd,linestyle="",marker="x",markersize=5,color="#d76caa",zorder=2,label=SimLabel)
+    
+
+    
+    axs[1].axhline(y = ylineval, color = 'k', linestyle = ':',alpha=1)
+    axs[1].errorbar(SimMidBins,VRMSRatio,yerr=VRMSRatioStd,linestyle="",marker=".",color="#5551a2",zorder=2)
+    axs[0].legend(loc="lower left",fontsize=15,prop={"weight":"bold","size":15})
+    
+    axs[1].xaxis.set_tick_params(width=5,length=8)
+    axs[0].yaxis.set_tick_params(width=5,length=8)
+    axs[1].yaxis.set_tick_params(width=5,length=8)
+    plt.setp(axs[0].spines.values(), lw=5, color='k')
+    plt.setp(axs[1].spines.values(), lw=5, color='k')
+    
+    plt.savefig("Figures/TransitCurveSt"+str(StNr)+"Ch" + str(ChNr)+".pdf", format="pdf", bbox_inches="tight")
     return
     
 def TransitCurveRatioSingular(StNr,ChNr1,ChNr2,DataSample,DataFileId1=0,DataFileId2=0,SimFileId1=0,SimFileId2=0):
@@ -1264,3 +1313,63 @@ def SimSysError(StNr,ChNr,DataSample,GNSimFileIdMin, GNSimFileIdZero,GNSimFileId
         plt.legend(loc="lower left",fontsize=15)
         plt.show()
     return
+
+# brown (RGB: 90, 40, 40) to white (RGB: 255, 255, 255)
+BkgGradBlueRGB=(143,184,226)
+BkgGradPinkRGB=(221,162,201)
+
+PurpleLinesRGB=(85,81,162)
+PurpleDarkRGB=(117,101,173)
+PurpleLightRGB=(131,120,183)
+
+PinkLightRGB=(217,128,181)
+PinkDarkRGB=(215,108,170)
+def MakeCM(rgb1,rgb2):
+    """Make a new colormap"""
+    r1,g1,b1=rgb1
+    r2,g2,b2=rgb2
+    N = 256
+    vals = np.ones((N, 4))
+    vals[:, 0] = np.linspace(r1/256,r2/256, N)
+    vals[:, 1] = np.linspace(g1/256,g2/256, N)
+    vals[:, 2] = np.linspace(b1/256,b2/256, N)
+    newcmp = mpl.colors.ListedColormap(vals)
+    return newcmp
+
+def MakeCM3(rgb1,rgb2,rgb3,N=256):
+    """Make a new colormap"""
+    r1,g1,b1=rgb1
+    r2,g2,b2=rgb2
+    r3,g3,b3=rgb3
+    vals = np.ones((N, 4))
+    HalfPoint=int(N/2)
+    vals[:HalfPoint, 0] = np.linspace(r1/256,r2/256, HalfPoint)
+    vals[:HalfPoint, 1] = np.linspace(g1/256,g2/256, HalfPoint)
+    vals[:HalfPoint, 2] = np.linspace(b1/256,b2/256, HalfPoint)
+    vals[HalfPoint:, 0] = np.linspace(r2/256,r3/256, HalfPoint)
+    vals[HalfPoint:, 1] = np.linspace(g2/256,g3/256, HalfPoint)
+    vals[HalfPoint:, 2] = np.linspace(b2/256,b3/256, HalfPoint)
+    newcmp = mpl.colors.ListedColormap(vals)
+    return newcmp
+
+def MakeCM4(rgb1,rgb2,rgb3,rgb4,N=256):
+    """Make a new colormap"""
+    import matplotlib as mpl
+    r1,g1,b1=rgb1
+    r2,g2,b2=rgb2
+    r3,g3,b3=rgb3
+    r4,g4,b4=rgb4
+    vals = np.ones((N, 4))
+    FPoint=int(N/3)
+    SPoint=int(2*N/3)
+    vals[:FPoint, 0] = np.linspace(r1/256,r2/256, FPoint)
+    vals[:FPoint, 1] = np.linspace(g1/256,g2/256, FPoint)
+    vals[:FPoint, 2] = np.linspace(b1/256,b2/256, FPoint)
+    vals[FPoint:SPoint, 0] = np.linspace(r2/256,r3/256, FPoint)
+    vals[FPoint:SPoint, 1] = np.linspace(g2/256,g3/256, FPoint)
+    vals[FPoint:SPoint, 2] = np.linspace(b2/256,b3/256, FPoint)
+    vals[SPoint:, 0] = np.linspace(r3/256,r4/256, FPoint+1)
+    vals[SPoint:, 1] = np.linspace(g3/256,g4/256, FPoint+1)
+    vals[SPoint:, 2] = np.linspace(b3/256,b4/256, FPoint+1)
+    newcmp = mpl.colors.ListedColormap(vals)
+    return newcmp

@@ -152,10 +152,10 @@ def Path(StNr,RunNr,System="U"):
     global DataPath
     if System=="U":
         #"/mnt/c/Users/Jethro/Desktop/Master thesis/RNO_DATA_DIR/station11/run101/combined.root"
-        return DataPath + "/station{}/run{}".format(StNr, RunNr)
+        return DataPath + "/station{}/run{}".format(StNr, int(RunNr))
     elif System=="W":
         #"/mnt/c/Users/Jethro/Desktop/Master thesis/RNO_DATA_DIR/station11/run101/combined.root"
-        return DataPath + r"\station{}\run{}".format(StNr, RunNr)
+        return DataPath + r"\station{}\run{}".format(StNr, int(RunNr))
 
 def FilesStRun(StNr,RunNr):
     """Returns the daqstatus -, headers - & pedestal datafiles for run RunNR of station StNr"""

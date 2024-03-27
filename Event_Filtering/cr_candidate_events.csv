@@ -1,0 +1,34 @@
+station,run,event,name,correlation,channel,snr,date,comment,dataset,downward_facing
+23,1091,1718,armstrong,0.87,16,29.6,29.09.2022,,burn_sample,check
+23,793,748,aldrin,0.68,13,6.96,06.09.2022,,burn_sample,check
+23,315,4162,collins,0.71,13,7.84,03.08.2022,,burn_sample,check
+24,970,709,pancakes,0.88,19,21.7,24.04.2023,,burn_sample,check
+13,247,418,,0.84,19,45.4,26.07.2022,,full_sample,check
+24,147,1210,,0.87,19,22.9,26.07.2022,,full_sample,check
+23,297,3340,,0.84,19,12.5,27.07.2022,+403MHz line,full_sample,check
+23,301,1000,,0.7,19,8.91,27.07.2022,,full_sample,check
+13,490,675,,0.81,16,20.5,14.08.2022,,full_sample,check
+13,513,2001,,0.84,19,29.8,16.08.2022,,full_sample,check
+23,312,590,,0.68,19,10.34,03.08.2022,,full_sample,check
+23,335,344,,0.73,13,9.77,05.08.2022,,full_sample,check
+23,339,1818,,0.74,16,10.05,05.08.2022,,full_sample,check
+23,340,760,,0.82,16,11.7,05.08.2022,low frequency,full_sample,check
+23,340,1482,,0.74,13,9.81,05.08.2022,,full_sample,check
+23,435,1062,,0.81,16,11.2,08.0.8.2022,,full_sample,check
+23,444,827,,0.62,19,6.79,09.08.2022,,full_sample,check
+23,470,1710,,0.7,19,10.31,11.08.2022,,full_sample,check
+23,470,4227,,0.67,19,7.68,11.08.2022,,full_sample,check
+23,484,2662,,0.66,13,6.69,12.08.2022,4 min to next high correlation score background event,full_sample,check
+23,552,3491,,0.78,19,9.91,18.08.2022,,full_sample,check
+23,563,868,,0.71,19,7.51,18.08.2022,,full_sample,check
+23,573,2481,,0.7,13,6.96,19.08.2022,,full_sample,check
+23,575,486,,0.77,13,10.6,19.08.2022,high E CR in unsensitive part of antenna?,full_sample,check
+23,590,2351,,0.77,16,7.23,21.08.2022,low frequency,full_sample,check
+23,608,263,,0.63,13,6.43,22.08.2022,,full_sample,check
+23,608,3459,,0.87,13,18,22.08.2022,,full_sample,check
+23,636,3728,,0.69,19,9.92,25.08.2022,triggered by downward facing antennas,full_sample,check
+23,655,1923,,0.74,13,9.98,26.08.2022,,full_sample,check
+23,659,2682,,0.84,13,13.1,26.08.2022,,full_sample,check
+23,660,3455,,0.7,16,6.15,27.08.2022,triggered by downward facing antennas + 403MHz line,full_sample,check
+24,362,2502,,0.86,16,36.6,15.08.2022,,full_sample,check
+24,465,771,,0.88,16,26.5,24.08.2022,1 min to next high correlation score background event + close to a correlation burst,full_sample,check
