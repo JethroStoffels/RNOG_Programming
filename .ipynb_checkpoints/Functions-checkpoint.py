@@ -16,7 +16,7 @@ import os
 # # Define Constants:
 
 #DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
-DataPath="/pnfs/iihe/rno-g/data/handcarry22" #For the handcarry data
+DataPath="/pnfs/iihe/rno-g/data" #For the handcarry data
 
 # ## Firmware changes run number
 
@@ -147,15 +147,15 @@ def TimeTraceFFT(StNr,ChNr,Run,EvNr,Amplitude="V",LogScale=False):
     #plt.legend()
     plt.show()
 
-def Path(StNr,RunNr,System="U"):
-    """Returns path to the datafiles for station StNr, run RunNr. Path differs for OS Unix (U) or Windows (W)."""
+def Path(StNr,RunNr):
+    """Returns path to the datafiles for station StNr, run RunNr."""
     global DataPath
-    if System=="U":
-        #"/mnt/c/Users/Jethro/Desktop/Master thesis/RNO_DATA_DIR/station11/run101/combined.root"
-        return DataPath + "/station{}/run{}".format(StNr, int(RunNr))
-    elif System=="W":
-        #"/mnt/c/Users/Jethro/Desktop/Master thesis/RNO_DATA_DIR/station11/run101/combined.root"
-        return DataPath + r"\station{}\run{}".format(StNr, int(RunNr))
+    for year in range(22,24):
+        if os.path.isdir(DataPath + "/handcarry"+str(year)+"/station"+str(StNr)+"/run" + str(RunNr)):
+            return DataPath + "/handcarry{}/station{}/run{}".format(year,StNr, int(RunNr))
+    # print("Did not find a run with run number " + str(RunNr) + " for station " + str(StNr))
+    return
+            
 
 def FilesStRun(StNr,RunNr):
     """Returns the daqstatus -, headers - & pedestal datafiles for run RunNR of station StNr"""
@@ -166,7 +166,7 @@ def FilesStRun(StNr,RunNr):
     PedestalFile=uproot.open(path+"/pedestal.root")
     WaveformsFile=uproot.open(path+"/waveforms.root")
     RunInfo=uproot.open(path+"/runinfo.root")
-    return WaveformsFile, DAQStatFile, HeadersFile, PedestalFile
+    return WaveformsFile, DAQStatFile, HeadersFile, PedestalFile, RunInfo
 
 def GetCombinedFile(StNr,RunNr):
     """Returns the combined datafile for run RunNR of station StNr"""
@@ -209,6 +209,10 @@ def GetHeaderFile(StNr,RunNr):
     """Returns the header datafile for run RunNR of station StNr"""
     import uproot
     path=Path(StNr,RunNr)
+    if path==None:
+        return
+    if not os.path.isfile(path+"/headers.root"):
+        return None
     HeaderFile=uproot.open(path+"/headers.root")
     Key=None
     try:
@@ -234,3 +238,74 @@ def ADCtoVoltage(ADCCounts):
     ADC_Factor=0.000618
     ADC_Offset=-0.008133 #Set this to zero for now, otherwise the FFT becomes extremely weird
     return (ADC_Factor*ADCCounts + ADC_Offset)
+
+def RunListRunSum(StNr):
+    """Constructs a runlist from the zeuthen run summary with runs that have no comments"""
+    import pandas as pd
+    RunSum=pd.read_csv('rnog_run_summary.csv')
+    NpRuns=np.hstack(RunSum[(RunSum.station==StNr) & (RunSum.comment.isnull())][["run"]].to_numpy(dtype=int))
+    return NpRuns
+
+# def RunList(StNr,Date0=None,Date1=None,Comments=False):
+#     """Constructs a runlist between dates Date0 and Date1 with runs that have no comments if Comments was set to False"""
+#     import pandas as pd
+#     from datetime import datetime
+#     T=datetime.utcfromtimestamp(UnixTime)
+#     RunSum=pd.read_csv('rnog_run_summary.csv')
+#     NpRuns=np.hstack(RunSum[(RunSum.station==StNr) & (RunSum.comment.isnull())][["run"]].to_numpy(dtype=int))
+#     return NpRuns
+
+def RunList(StNr,T0,T1,MaxRuns,AllowComments=False):
+    """Construct a run list of runs between two dates."""
+    Run0,Run1=RunListMinMax(StNr,T0,T1,MaxRuns)
+    if AllowComments:
+        return np.arange(Run0,Run1+1,dtype=int)
+    else:
+        # path=Path(StNr,RunNr)
+        return np.array([Run for Run in np.arange(Run0,Run1,dtype=int) if Path(StNr,Run)!=None and (os.path.getsize(Path(StNr,Run) + '/aux/comment.txt')==0)])
+    
+def RunListMinMax(StNr,T0,T1,MaxRuns):
+    """Returns a list of runs between the two specified times (datetime object). Helper function for the RunList function."""
+    import datetime
+    import time
+    T0,T1 =  time.mktime(T0.timetuple()), time.mktime(T1.timetuple())
+    
+    X0,X1=0,MaxRuns
+    for i in range(int(np.ceil(np.log2(X1)))):
+        Xmid=int((X1+X0)/2)
+        # print(X0,Xmid,X1)
+        if Xmid==X0 or Xmid==X1 or X1-X0<=2:
+            Result0=X0
+            break
+        HeaderFile=GetHeaderFile(StNr,Xmid)
+        if HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0:
+            while HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0:
+                Xmid-=1
+                HeaderFile=GetHeaderFile(StNr,Xmid)
+        TX0=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
+        if TX0<T0:
+            X0,X1=Xmid,X1
+            continue
+        elif TX0>T0:
+            X0,X1=X0,Xmid
+
+    X0,X1=0,MaxRuns
+    for i in range(int(np.ceil(np.log2(X1)))):
+        Xmid=int((X1+X0)/2)
+        # print(X0,Xmid,X1)
+        if Xmid==X0 or Xmid==X1 or X1-X0<=2:
+            Result1=X1
+            break
+        HeaderFile=GetHeaderFile(StNr,Xmid)
+        if HeaderFile==None:
+            while HeaderFile==None:
+                Xmid-=1
+                HeaderFile=GetHeaderFile(StNr,Xmid)
+        TX1=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
+        if TX1<T1:
+            X0,X1=Xmid,X1
+            continue
+        elif TX1>T1:
+            X0,X1=X0,Xmid
+
+    return Result0,Result1
