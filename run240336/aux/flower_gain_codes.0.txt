@@ -1,0 +1,2 @@
+# Flower gain codes, station=21, run=240336,  time=1722701638
+10 11 11 13

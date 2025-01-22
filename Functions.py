@@ -17,7 +17,7 @@ import os
 
 #DataPath="/pnfs/iihe/rno-g/data" #For the systematically updated rno-g data
 DataPath="/pnfs/iihe/rno-g/data" #For the handcarry data
-
+PNFSPath="/pnfs/iihe/rno-g/store/user/jstoffels/Jobs"
 # ## Firmware changes run number
 
 # Source: following message from slack group chat  rno-g ops <br>
@@ -150,9 +150,8 @@ def TimeTraceFFT(StNr,ChNr,Run,EvNr,Amplitude="V",LogScale=False):
 def Path(StNr,RunNr):
     """Returns path to the datafiles for station StNr, run RunNr."""
     global DataPath
-    for year in range(22,24):
-        if os.path.isdir(DataPath + "/handcarry"+str(year)+"/station"+str(StNr)+"/run" + str(RunNr)):
-            return DataPath + "/handcarry{}/station{}/run{}".format(year,StNr, int(RunNr))
+    if os.path.isdir(DataPath + "/handcarry/station"+str(StNr)+"/run" + str(RunNr)):
+        return DataPath + "/handcarry/station{}/run{}".format(StNr, int(RunNr))
     # print("Did not find a run with run number " + str(RunNr) + " for station " + str(StNr))
     return
             
@@ -255,57 +254,99 @@ def RunListRunSum(StNr):
 #     NpRuns=np.hstack(RunSum[(RunSum.station==StNr) & (RunSum.comment.isnull())][["run"]].to_numpy(dtype=int))
 #     return NpRuns
 
-def RunList(StNr,T0,T1,MaxRuns,AllowComments=False):
+def RunList(StNr,T0,T1,AllowComments=False):
     """Construct a run list of runs between two dates."""
-    Run0,Run1=RunListMinMax(StNr,T0,T1,MaxRuns)
+    Run0,Run1=RunListMinMax(StNr,T0,T1)
     if AllowComments:
         return np.arange(Run0,Run1+1,dtype=int)
     else:
         # path=Path(StNr,RunNr)
-        return np.array([Run for Run in np.arange(Run0,Run1,dtype=int) if Path(StNr,Run)!=None and (os.path.getsize(Path(StNr,Run) + '/aux/comment.txt')==0)])
+        return np.array([Run for Run in np.arange(Run0,Run1+1,dtype=int) if Path(StNr,Run)!=None and (os.path.getsize(Path(StNr,Run) + '/aux/comment.txt')==0)])
     
-def RunListMinMax(StNr,T0,T1,MaxRuns):
+def RunListMinMax(StNr,T0,T1):
     """Returns a list of runs between the two specified times (datetime object). Helper function for the RunList function."""
     import datetime
     import time
+    
+    MaxYear=23
+    #print([RunNr[3:].isdigit() for RunNr in os.listdir(DataPath + "/handcarry/station" + str(StNr))])
+    MaxRuns=max([int(RunNr[3:]) for RunNr in os.listdir(DataPath + "/handcarry/station" + str(StNr)) if RunNr[3:].isdigit()])
+    
     T0,T1 =  time.mktime(T0.timetuple()), time.mktime(T1.timetuple())
     
-    X0,X1=0,MaxRuns
-    for i in range(int(np.ceil(np.log2(X1)))):
+    X0,X1=1,MaxRuns
+    for i in range(int(np.ceil(np.log2(X1)))+1):
         Xmid=int((X1+X0)/2)
         # print(X0,Xmid,X1)
-        if Xmid==X0 or Xmid==X1 or X1-X0<=2:
-            Result0=X0
+        if Xmid==X0 or Xmid==X1:# or X1-X0<=2:
+            # if Xmid==0:
+            #     Result0=X1
+            #     break
+            HeaderFile=GetHeaderFile(StNr,X0)
+            if HeaderFile==None:
+                Result0=X1
+                break
+            TX0=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
+            if T0<TX0:
+                Result0=X0
+            else:
+                Result0=X1
             break
         HeaderFile=GetHeaderFile(StNr,Xmid)
-        if HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0:
-            while HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0:
+        if (HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0 or np.isnan(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0])):
+            while HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0 or np.isnan(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]):
                 Xmid-=1
                 HeaderFile=GetHeaderFile(StNr,Xmid)
+            if Xmid<=X0:
+                Xmid=int((X1+X0)/2)
+                while HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0 or np.isnan(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]):
+                    Xmid+=1
+                    HeaderFile=GetHeaderFile(StNr,Xmid)
+                if Xmid>=X1:
+                    print("Loop got stuck around X0,X1=",X0,X1)
+                    return
         TX0=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
-        if TX0<T0:
+        if TX0<=T0:
             X0,X1=Xmid,X1
             continue
         elif TX0>T0:
             X0,X1=X0,Xmid
+        else:
+            print("Error")
 
-    X0,X1=0,MaxRuns
-    for i in range(int(np.ceil(np.log2(X1)))):
+    X0,X1=1,MaxRuns
+    for i in range(int(np.ceil(np.log2(X1)))+1):
         Xmid=int((X1+X0)/2)
         # print(X0,Xmid,X1)
-        if Xmid==X0 or Xmid==X1 or X1-X0<=2:
-            Result1=X1
+        if Xmid==X0 or Xmid==X1:# or X1-X0<=2:
+            HeaderFile=GetHeaderFile(StNr,X1)
+            if HeaderFile==None:
+                Result1=X0
+                break
+            TX1=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
+            if T1<TX1:
+                Result1=X0
+            else:
+                Result1=X1
             break
         HeaderFile=GetHeaderFile(StNr,Xmid)
         if HeaderFile==None:
             while HeaderFile==None:
                 Xmid-=1
                 HeaderFile=GetHeaderFile(StNr,Xmid)
+            if Xmid<=X0:
+                Xmid=int((X1+X0)/2)
+                while HeaderFile==None or len(HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np'))==0:
+                    Xmid+=1
+                    HeaderFile=GetHeaderFile(StNr,Xmid)
+                if Xmid>=X1:
+                    print("Loop got stuck around X0,X1=",X0,X1)
+                    return
         TX1=HeaderFile["trigger_time"].array(entry_start=0, entry_stop=1,library='np')[0]
         if TX1<T1:
             X0,X1=Xmid,X1
             continue
         elif TX1>T1:
             X0,X1=X0,Xmid
-
+            
     return Result0,Result1
