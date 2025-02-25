@@ -1,0 +1,30 @@
+calibrate: 0
+limits: [0.0, 130, 0, -100]
+# limits: [0, 360, 90, 0] # do lower theta followed by higher theta, then higher phi followed by lower phi
+
+station: 11
+# run: 797
+run: null
+events: null
+# events: [695]
+
+#station: 21
+#run: 476
+
+stepsize: 1
+channels: [0, 1, 2, 3]
+coords: "cylindrical"
+
+# root_file_dir: "/storage/group/szw5718/default/rno-g/data/handcarry/2022/"
+# fig_dir: "/storage/group/szw5718/default/rno-g/cr_search/figures/"
+
+#root_file: "/home/blh5615/cr_search/data/root_files/station21_run476_combined.root"
+
+distance: 50
+#distance: null
+debug: False
+#plot: True
+
+raytracing: 0
+rec_type: "rhoz"
+name_mod: "outlier_runs"

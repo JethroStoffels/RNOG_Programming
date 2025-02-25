@@ -552,7 +552,7 @@ def SimNoiseTrace(StNr,ChNr,Run,EvtNr,UnixTime=None,ThermalNoiseT=275,Plot=False
             plt.show()
     return SamplingTimes, GNChannel.get_trace()
 
-def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroAvg=True, ThermalNoiseT=None,Plot=True,json="",dAngle=0):
+def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroAvg=True, ThermalNoiseT=None,Plot=True,json="",dAngle=0,model='gsm2016'):
     """Simulates a transit curve containing galactic and/or thermal noise.
     Parameters:
     StNr= Station number
@@ -564,6 +564,7 @@ def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroA
     ZeroAvg=ZeroAverages the simulates noise timetrace before its VRMS is calculated
     ThermalNoise= Boolean, if True: thermal noise is included in the simulation.
     json=str, if "": use pymongo detector description, if "normal": use RNO_season_YEAR.json description else: use json description with this name
+    model='lfmap', 'lfss', 'gsm2016', 'haslam', 'ssm', 'gmoss', 'ulsa_fdi', 'ulsa_dpi', 'ulsa_ci'
     """   
     
     import NuRadioReco.modules.channelGalacticNoiseAdder as ChannelGalacticNoiseAdder
@@ -589,7 +590,7 @@ def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroA
             for ChNr in ChNrs:
                 GNDetector.get_channel_orientation(StNr, ChNr)
                 GNDetector._Detector__buffered_stations[StNr]["channels"][ChNr]['channel_position']['rotation']['phi']+=int(dAngle)
-                print('Ch',ChNr,'orientation:',GNDetector.get_channel_orientation(StNr, ChNr))
+        print('Ch',ChNr,'orientation:',GNDetector.get_channel_orientation(StNr, ChNr))
     elif json=="normal":
         detpath = os.path.dirname(detector.__file__)
         detpath+="/RNO_G/RNO_season_{0}.json".format(Date.year)
@@ -617,7 +618,7 @@ def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroA
         GNStation.add_channel(GNChannel) 
     
     channelGalacticNoiseAdder = ChannelGalacticNoiseAdder.channelGalacticNoiseAdder()
-    channelGalacticNoiseAdder.begin(debug=False,n_side=16,interpolation_frequencies=np.arange(40 * units.MHz,160 * units.MHz,10 * units.MHz)) #For interpolation range over entire range but also focused on freq regime where GN is dominant 
+    channelGalacticNoiseAdder.begin(debug=False,skymodel=model,n_side=16,interpolation_frequencies=np.arange(40 * units.MHz,160 * units.MHz,10 * units.MHz)) #For interpolation range over entire range but also focused on freq regime where GN is dominant 
     hardwareResponseIncorporator = NuRadioReco.modules.RNO_G.hardwareResponseIncorporator.hardwareResponseIncorporator()
     # channelGalacticNoiseAdder._channelGalacticNoiseAdder__antenna_pattern_provider.load_antenna_pattern(GNDetector.get_antenna_model(GNStation.get_id(), GNChannel.get_id()))
     N=0
@@ -637,10 +638,13 @@ def GalacticNoiseVRMSCurve(StNr,ChNrs,PDData,FFTFilter=False,Lowpass=False,ZeroA
         Noise_min_freq,Noise_max_freq,Noise_df=10 * units.MHz,1100 * units.MHz,100*units.MHz
         # Noise_min_freq,Noise_max_freq,Noise_df=10 * units.MHz,150 * units.MHz,10*units.MHz
         if ThermalNoiseT==None:
-            continue
+            pass
         elif type(ThermalNoiseT)==int or type(ThermalNoiseT)==float:
             ThermalNoiseT={ChNr:ThermalNoiseT for ChNr in ChNrs}
-            #ADD THERMAL NOISE!!!!
+            channelGenericNoiseAdder = NuRadioReco.modules.channelGenericNoiseAdder.channelGenericNoiseAdder()
+            channelGenericNoiseAdder.begin()
+            Amplitudes={ChNr: hcr.calculate_thermal_noise_Vrms(T_noise=ThermalNoiseT[ChNr], T_noise_max_freq=Noise_max_freq, T_noise_min_freq=Noise_min_freq) for ChNr in ChNrs}
+            channelGenericNoiseAdder.run(GNEvent, GNStation, GNDetector, amplitude=Amplitudes,min_freq=Noise_min_freq, max_freq=Noise_max_freq,type='rayleigh')
         elif type(ThermalNoiseT)==dict:
             channelGenericNoiseAdder = NuRadioReco.modules.channelGenericNoiseAdder.channelGenericNoiseAdder()
             channelGenericNoiseAdder.begin()
